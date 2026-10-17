@@ -11,3 +11,8 @@ openai>=1.50
 python-dotenv>=1.0
 torch>=2.2
 python-docx>=1.1          # final 15-day Word summary (Brief §11)
+# Kronos-mini forecaster (vendor/kronos); versions verified working on Oct 18 2026
+einops==0.8.2
+huggingface_hub==2.2.0
+safetensors==0.8.0
+tqdm==4.70.0

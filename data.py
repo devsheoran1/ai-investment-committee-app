@@ -150,7 +150,7 @@ def _download(tickers: list[str], period: str) -> dict[str, pd.DataFrame]:
     if raw is None or raw.empty:
         raise RuntimeError("yfinance returned no data")
     fields = {}
-    for f in ("Open", "Close", "Volume"):
+    for f in ("Open", "High", "Low", "Close", "Volume"):
         df = raw[f] if isinstance(raw.columns, pd.MultiIndex) else raw[[f]].rename(columns={f: tickers[0]})
         fields[f.lower()] = df
     close = fields["close"]
@@ -163,7 +163,7 @@ def _download(tickers: list[str], period: str) -> dict[str, pd.DataFrame]:
                 one = yf.download([t], period=period, auto_adjust=True, progress=False, threads=False)
                 if one is None or one.empty:
                     continue
-                for f in ("Open", "Close", "Volume"):
+                for f in ("Open", "High", "Low", "Close", "Volume"):
                     col = one[f]
                     col = col[t] if isinstance(col, pd.DataFrame) else col
                     fields[f.lower()] = fields[f.lower()].drop(columns=[t], errors="ignore").join(
@@ -217,7 +217,7 @@ def get_market_data(tickers: list[str] | None = None) -> dict[str, pd.DataFrame]
             DATA_SOURCE.update(prices=f"yfinance (cached from {day}; today's download failed)", synthetic=False)
         else:
             close = _synthetic_prices(tickers)
-            md = {"close": close, "open": close.shift(1).fillna(close),
+            md = {"close": close, "open": close.shift(1).fillna(close), "high": close * 1.005, "low": close * 0.995,
                   "volume": pd.DataFrame(5e6, index=close.index, columns=close.columns)}
             DATA_SOURCE.update(prices=f"SYNTHETIC (yfinance failed: {str(e)[:80]})", synthetic=True)
     if not DATA_SOURCE["synthetic"]:

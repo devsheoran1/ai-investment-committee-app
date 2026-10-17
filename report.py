@@ -113,6 +113,8 @@ def daily_report(day: str | None = None) -> str:
                 md.append(f"- Macro: regime **{c.get('regime')}** ({c.get('regime_note', '')}). {c.get('rationale', '')}")
             elif m["agent"] == "Risk Manager" and m["stage"] in ("risk_review", "risk_override"):
                 last_risk = c
+            elif m["agent"] == "Quant Analyst" and c.get("model_scoreboard"):
+                md.append(f"- Models: {c['model_scoreboard']}")
             elif m["agent"] == "CIO":
                 if c.get("key_risks"):
                     md.append(f"- Key risks: {'; '.join(c['key_risks'])}")

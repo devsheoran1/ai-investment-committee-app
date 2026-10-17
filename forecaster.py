@@ -60,7 +60,14 @@ def forecast(prices: pd.DataFrame, tickers: list[str]) -> dict:
     per_ticker = {}
     for tk, (pred_scaled, sd) in preds_latest.items():
         per_ticker[tk] = {"pred_5d_return_pct": round(float(pred_scaled * sd) * 100, 2)}
+    # OOS predictions keyed by offset k = days between the target's end and the last bar
+    # (k=0: the forecast whose 5d window ends today). Same convention the horse race uses.
+    n_rets = len(prices) - 1
+    sd = {tk: v[1] for tk, v in latest.items()}
+    oos = [{"ticker": tk, "offset": int(n_rets - p["horizon"] - i), "pred": float(pr * sd[tk])}
+           for tk, i, pr in zip(owner[test], t_idx[test], preds_test)]
     return {
+        "oos_preds": oos,
         "model": model_name,
         "train_samples": int(train.sum()),
         "test_samples": int(test.sum()),

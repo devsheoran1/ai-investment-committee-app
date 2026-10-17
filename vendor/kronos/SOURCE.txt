@@ -1,0 +1,3 @@
+Vendored from https://github.com/shiyu-coder/Kronos commit 67b630e67f6a18c9e9be918d9b4337c960db1e9a (model/ package only, MIT)
+Local change: kronos.py line 10 import made relative (.module).
+Local change: auto_regressive_inference(..., return_samples=False) returns the un-averaged samples when True.

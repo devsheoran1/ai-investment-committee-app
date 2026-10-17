@@ -25,6 +25,7 @@ import data
 import database as db
 import forecaster
 import report
+from forecasters import horse_race, kronos_fc
 import screener
 from committee import (ChiefInvestmentOfficer, EquityResearchAnalyst, MacroStrategist,
                        PortfolioManager, QuantAnalyst, RiskManager, SentimentAnalyst, Trader)
@@ -124,19 +125,37 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
     fc_cols = list(dict.fromkeys(shortlist + [config.BENCHMARK]))
     fc = forecaster.forecast(close[fc_cols].ffill().dropna(), shortlist)
 
+    race, race_sec = None, 0.0
+    try:   # Kronos + horse race: optional, any failure = LSTM-only (never crashes the run)
+        import time as _t
+        t0 = _t.time()
+        px_fc = close[fc_cols].ffill().dropna()
+        mk = {f: v[[c for c in fc_cols if c in v.columns]] for f, v in market.items()}
+        kr = data._cached(data._key(f"kronos_{px_fc.index[-1].date()}", shortlist),
+                          lambda: kronos_fc.forecast(mk, shortlist) or {}, keep_if=bool)
+        kr_live = (kr or {}).get("forecasts") or None
+        race = horse_race.run(px_fc, mk, shortlist, fc.get("oos_preds", []), fc["forecasts"], kr_live)
+        race_sec = _t.time() - t0
+    except Exception as e:  # noqa: BLE001
+        emit("model", f"Horse race skipped ({str(e)[:100]}); LSTM-only")
+        race = None
+
     run_id = db.start_run(llm.provider, data.DATA_SOURCE["prices"], mode)
     db.log_message(run_id, "System", "Screening funnel (IPS Part B)", "rules", "tools", 0,
                    {"universe_source": data.DATA_SOURCE["universe"], "funnel": scr["funnel"],
                     "shortlist": shortlist, "preflight_excluded": bad,
                     "top_10_screen": scr["table"].head(10)[["sector", "screen_score"]].to_dict("index")})
     db.log_message(run_id, "System", "Regime rules (IPS C1.3)", "rules", "tools", 0, regime_info)
+    if race:
+        db.log_message(run_id, "System", "Model horse race (LSTM vs Kronos vs naive)", "rules", "tools", 0,
+                       {k: v for k, v in race.items() if k not in ("live", "oos_rows")} | {"seconds": round(race_sec, 1)})
     db.log_message(run_id, "System", "Quant desk — LSTM model card", fc["model"], "tools", 0,
-                   {k: v for k, v in fc.items() if k != "forecasts"})
+                   {k: v for k, v in fc.items() if k not in ("forecasts", "oos_preds")})
 
     ctx = {"tickers": shortlist, "stocks": stocks, "sectors": sectors, "asset_types": asset_types,
            "fundamentals": fundamentals, "research_flags": flags, "news": news, "macro": macro,
            "regime_info": regime_info, "regime_rules": rules, "rule_tilts": analytics.sector_tilts(macro),
-           "technicals": tech, "forecast": fc, "current_weights": current_w, "mode": mode,
+           "technicals": tech, "forecast": fc, "race": race, "current_weights": current_w, "mode": mode,
            "limits": config.RISK_LIMITS}
     failed: list[str] = []
 

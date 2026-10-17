@@ -132,7 +132,16 @@ def render_message(m: dict) -> None:
                     unsafe_allow_html=True)
         if c.get("agent_failed"):
             st.error("Agent failed this cycle — treated as no signal (IPS D11).")
-        if a == "System":
+        if a == "System" and "scoreboard" in c:   # Model horse race
+            st.markdown(f"**{c.get('scoreboard_line', '')}**")
+            board = pd.DataFrame(c["scoreboard"]).T.rename(columns={"hit": "hit rate", "ic": "rank IC", "ic_t": "IC t-stat"})
+            board["weight"] = pd.Series(c.get("weights", {}))
+            st.dataframe(board[["n", "hit rate", "rank IC", "IC t-stat", "weight"]].style.format(
+                {"hit rate": "{:.1%}", "rank IC": "{:+.3f}", "IC t-stat": "{:+.2f}", "weight": "{:.0%}"}, na_rep="–"),
+                width="stretch")
+            st.caption(f"{c.get('n_origins')} non-overlapping 5-day origins × shortlist; Kronos run took {c.get('seconds')}s. "
+                       "With this few origins the t-stats are weak evidence either way.")
+        elif a == "System":
             st.json(c, expanded=False)
         elif a == "Macro Strategist":
             st.markdown(f"Regime **{c['regime']}** ({c.get('regime_note', '')}) · equity exposure "
@@ -146,6 +155,8 @@ def render_message(m: dict) -> None:
             st.dataframe(pd.DataFrame(c["ratings"]).T, width="stretch")
         elif a == "Quant Analyst":
             st.markdown(f"LSTM reliability: **{c['model_reliability']}** — {c['note']}")
+            if c.get("model_scoreboard"):
+                st.caption(c["model_scoreboard"])
             st.dataframe(pd.DataFrame(c["signals"]).T, width="stretch")
         elif a == "Sentiment Analyst":
             st.write(c.get("market_mood", ""))
