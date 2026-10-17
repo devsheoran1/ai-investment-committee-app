@@ -1,0 +1,16 @@
+
+*.pkl
+*_replay.db
+*_synthetic_sandbox.db
+.DS_Store
+.claude/
+.env
+.venv/
+AI Inv Bots/
+CLAUDE_old_zip.skill
+__pycache__/
+data/cache/
+data/fund.db
+finance.db
+reports/
+trades.csv
