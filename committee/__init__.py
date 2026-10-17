@@ -4,6 +4,7 @@ from .equity_research import EquityResearchAnalyst
 from .macro_strategist import MacroStrategist
 from .portfolio_manager import PortfolioManager
 from .quant_analyst import QuantAnalyst
+from .reflector import ReflectionAnalyst
 from .risk_manager import RiskManager
 from .sentiment_analyst import SentimentAnalyst
 from .trader import Trader

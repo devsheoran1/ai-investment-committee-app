@@ -125,6 +125,24 @@ def daily_report(day: str | None = None) -> str:
     if r_day.empty:
         md += ["No committee run today.", ""]
 
+    md += ["## Lessons learned (reflection memory)", ""]
+    import reflection
+    rec = reflection.track_record()
+    refl = db.get_reflections(evaluated_only=True)
+    if rec.get("calls"):
+        md.append(f"Track record: {rec['calls']} graded calls · hit rate {rec['hit_rate']} (last 10: {rec['last10_hit_rate']}) · "
+                  f"avg excess vs SPY {rec['avg_excess_ret']:+.2%}")
+        md.append("")
+        for r in refl[refl["eval_date"] == day].itertuples() if not refl.empty else []:
+            md.append(f"- **{r.ticker} {r.action}** ({r.verdict}, {r.excess_ret:+.1%} vs SPY): {r.lesson}")
+        if refl.empty or refl[refl["eval_date"] == day].empty:
+            md.append("No calls graded today; latest lessons:")
+            for r in refl.head(3).itertuples():
+                md.append(f"- **{r.ticker} {r.action}** ({r.verdict}): {r.lesson}")
+    else:
+        md.append("No calls graded yet (the first become due 5 trading days after the first trades).")
+    md.append("")
+
     h = _holdings_table(_last_prices(day), nav)
     md += ["## Holdings", ""]
     if h.empty:

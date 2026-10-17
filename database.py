@@ -49,6 +49,13 @@ CREATE TABLE IF NOT EXISTS messages (
     run_id INTEGER, ts TEXT, agent TEXT, title TEXT, model TEXT,
     stage TEXT, round INTEGER, content TEXT
 );
+CREATE TABLE IF NOT EXISTS reflections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    decided_at TEXT, run_id INTEGER, ticker TEXT, action TEXT, entry_px REAL,
+    thesis TEXT, invalidation TEXT, invalidation_px REAL, horizon_days INTEGER DEFAULT 5,
+    entry_date TEXT, regime TEXT, sector TEXT, signals TEXT,
+    eval_date TEXT, ret REAL, spy_ret REAL, excess_ret REAL, verdict TEXT, lesson TEXT, tags TEXT
+);
 CREATE TABLE IF NOT EXISTS regime_state (
     date TEXT PRIMARY KEY, raw TEXT, effective TEXT, note TEXT
 );
@@ -93,7 +100,7 @@ def init_db(reset: bool = False) -> None:
     with conn() as c:
         if reset:
             for t in ("simulation", "positions", "transactions", "daily_snapshots",
-                      "runs", "messages", "regime_state"):
+                      "runs", "messages", "regime_state", "reflections"):
                 c.execute(f"DROP TABLE IF EXISTS {t}")
         c.executescript(SCHEMA)
         if c.execute("SELECT COUNT(*) FROM simulation").fetchone()[0] == 0:
@@ -194,7 +201,8 @@ def trades_today() -> int:
         return int(c.execute("SELECT COUNT(*) FROM transactions WHERE date=?", (today(),)).fetchone()[0])
 
 
-def execute_trade(run_id: int, symbol: str, side: str, shares: int, price: float, reason: str) -> dict:
+def execute_trade(run_id: int, symbol: str, side: str, shares: int, price: float, reason: str,
+                  meta: dict | None = None) -> dict:
     shares = int(shares)
     t = now()
     with conn() as c:
@@ -228,6 +236,12 @@ def execute_trade(run_id: int, symbol: str, side: str, shares: int, price: float
                   "VALUES (?,?,?,?,?,?,?,?,?,?)",
                   (t.date().isoformat(), t.strftime("%H:%M:%S"), side, symbol, shares, round(price, 4),
                    round(total, 2), reason, run_id, cost))
+        if meta is not None and shares > 0:    # every executed trade is a call the committee will be graded on
+            c.execute("INSERT INTO reflections (decided_at, run_id, ticker, action, entry_px, thesis, invalidation, "
+                      "invalidation_px, horizon_days, entry_date, regime, sector, signals) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                      (_now(), run_id, symbol, side, price, meta.get("thesis", ""), meta.get("invalidation", ""),
+                       meta.get("invalidation_px"), meta.get("horizon_days", 5), meta.get("entry_date"),
+                       meta.get("regime"), meta.get("sector"), json.dumps(meta.get("signals", {}), default=str)))
     return {"symbol": symbol, "side": side, "shares": shares, "price": price, "total": total}
 
 
@@ -306,3 +320,29 @@ def export_trades_csv(path: str | None = None) -> str:
             w.writerow([r["date"], r["hour"], r["symbol"], r["action"], f"{r['price']:.2f}",
                         r["shares"], f"{r['total']:.2f}", r["reason"]])
     return path
+
+
+# ---------------------------------------------------------- reflections --- #
+def pending_reflections() -> list[dict]:
+    with conn() as c:
+        return [dict(r) for r in c.execute("SELECT * FROM reflections WHERE eval_date IS NULL ORDER BY id")]
+
+
+def finish_reflection(rid: int, eval_date: str, ret: float, spy_ret: float, excess: float,
+                      verdict: str, lesson: str, tags: list[str]) -> None:
+    with conn() as c:
+        c.execute("UPDATE reflections SET eval_date=?, ret=?, spy_ret=?, excess_ret=?, verdict=?, lesson=?, tags=? "
+                  "WHERE id=?", (eval_date, ret, spy_ret, excess, verdict, lesson, json.dumps(tags), rid))
+
+
+def get_reflections(evaluated_only: bool = False) -> pd.DataFrame:
+    with conn() as c:
+        q = "SELECT * FROM reflections" + (" WHERE eval_date IS NOT NULL" if evaluated_only else "") + " ORDER BY id DESC"
+        return pd.read_sql(q, c)
+
+
+def latest_buy_reflection(ticker: str) -> dict | None:
+    with conn() as c:
+        row = c.execute("SELECT * FROM reflections WHERE ticker=? AND action='BUY' ORDER BY id DESC LIMIT 1",
+                        (ticker,)).fetchone()
+    return dict(row) if row else None

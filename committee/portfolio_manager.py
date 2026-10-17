@@ -19,13 +19,23 @@ risk-off are forced by code. Discretionary exit: Quant < 4/10, out of the top 20
 Only 5 trades a day are allowed, so concentrate changes where conviction moved most;
 keep convictions on holdings stable unless the evidence changed (no needless turnover).
 Initialisation run: build 10-20 positions from the strongest names.
-If the Risk Manager rejected your previous proposal, fix EVERY issue raised."""
+If the Risk Manager rejected your previous proposal, fix EVERY issue raised.
+MEMORY: "lessons" are the committee's own graded past calls (same ticker/sector/regime first) and
+"committee_track_record" its running hit rate vs SPY: let them temper conviction where the same setup
+failed before, but don't over-fit to a handful of calls.
+THESIS DISCIPLINE: for every name you want to ADD or EXIT, give a one-line thesis, what would prove it wrong
+(invalidation) and a price level for it (below entry for a long). "invalidated_holdings" are positions whose
+invalidation price has already been hit: you MUST answer each one in invalidation_responses, starting
+with "exit" or "hold" plus the reason; an unanswered one is treated as an exit candidate."""
     output_schema = """{
   "convictions": {"<TICKER>": number -1..1},
   "equity_exposure": number between 0.95 and 1.00,
   "rationale": "max 80 words: the main bets and why",
-  "response_to_risk": "max 50 words, only if responding to a Risk Manager rejection, else empty string"
-}"""
+  "response_to_risk": "max 50 words, only if responding to a Risk Manager rejection, else empty string",
+  "trade_notes": {"<TICKER you add or exit>": {"thesis": "max 25 words", "invalidation": "max 20 words", "invalidation_px": number}},
+  "invalidation_responses": {"<TICKER in invalidated_holdings>": "exit|hold: reason, max 25 words"}
+}
+(trade_notes and invalidation_responses are optional fields)"""
 
     def build_prompt(self, ctx):
         comp = {t: {k: c[k] for k in ("type", "composite_10", "quant", "sentiment", "research")}
@@ -42,6 +52,12 @@ If the Risk Manager rejected your previous proposal, fix EVERY issue raised."""
             "quant_model_reliability": ctx["quant"].get("model_reliability"),
             "current_portfolio_weights": {t: round(w, 3) for t, w in ctx["current_weights"].items()},
         }
+        if ctx.get("lessons"):
+            brief["lessons"] = ctx["lessons"]
+        if ctx.get("track_record", {}).get("calls"):
+            brief["committee_track_record"] = ctx["track_record"]
+        if ctx.get("invalidated"):
+            brief["invalidated_holdings"] = ctx["invalidated"]
         txt = f"COMMITTEE BRIEF:\n{compact(brief)}"
         if ctx.get("risk_feedback"):
             txt += (f"\n\nYOUR PREVIOUS PROPOSAL:\n{compact(ctx['prev_proposal'])}"
@@ -56,8 +72,13 @@ If the Risk Manager rejected your previous proposal, fix EVERY issue raised."""
             conv = {t: round(0.7 * v, 2) for t, v in ctx["prev_proposal"]["convictions"].items()}
             resp = "[mock] Shrank convictions 30% to address risk."
         top = sorted(conv, key=conv.get, reverse=True)[:3]
+        resp_inv = {i["ticker"]: f"exit: [mock] price {i['last_px']} is below the {i['invalidation_px']} invalidation level"
+                    for i in ctx.get("invalidated", [])}
+        notes = {t: {"thesis": f"[mock] composite {ctx['composite'][t]['composite_10']}/10, momentum-led",
+                     "invalidation": "[mock] closes 5% below entry", "invalidation_px": None} for t in top}
         return {"convictions": conv, "equity_exposure": ctx["macro_view"]["equity_exposure_target"],
-                "rationale": f"[mock] Follow composite; largest convictions {top}.", "response_to_risk": resp}
+                "rationale": f"[mock] Follow composite; largest convictions {top}.", "response_to_risk": resp,
+                "trade_notes": notes, "invalidation_responses": resp_inv}
 
     def validate(self, out, ctx):
         src = out.get("convictions") or {}
@@ -72,8 +93,23 @@ If the Risk Manager rejected your previous proposal, fix EVERY issue raised."""
             if t in ctx["forced_exits"]:
                 v = -1.0
             conv[t] = round(v, 2)
+        # invalidated holdings must be addressed (Alpha Arena failure mode: LLMs abandoning their own exits)
+        responses = {str(k): str(v)[:200] for k, v in (out.get("invalidation_responses") or {}).items()}
+        for inv in ctx.get("invalidated", []):
+            t, r = inv["ticker"], responses.get(inv["ticker"], "")
+            if r.lower().startswith("exit"):
+                conv[t] = -1.0
+            elif not r:
+                conv[t] = min(conv.get(t, 0.0), -0.6)
+                responses[t] = "NOT ADDRESSED by the PM: treated as an exit candidate (invalidation price hit)"
+        notes = {}
+        for t, n in (out.get("trade_notes") or {}).items():
+            if t in ctx["composite"] and isinstance(n, dict):
+                notes[t] = {"thesis": str(n.get("thesis", ""))[:250], "invalidation": str(n.get("invalidation", ""))[:200],
+                            "invalidation_px": n.get("invalidation_px")}
         return {"convictions": conv,
                 "equity_exposure": round(clip(out.get("equity_exposure"), 0.95, 1.0,
                                               ctx["macro_view"]["equity_exposure_target"]), 3),
                 "rationale": str(out.get("rationale", ""))[:700],
-                "response_to_risk": str(out.get("response_to_risk", ""))[:400]}
+                "response_to_risk": str(out.get("response_to_risk", ""))[:400],
+                "trade_notes": notes, "invalidation_responses": responses}

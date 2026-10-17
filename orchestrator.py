@@ -24,11 +24,13 @@ import config
 import data
 import database as db
 import forecaster
+import reflection
 import report
 from forecasters import horse_race, kronos_fc
 import screener
 from committee import (ChiefInvestmentOfficer, EquityResearchAnalyst, MacroStrategist,
-                       PortfolioManager, QuantAnalyst, RiskManager, SentimentAnalyst, Trader)
+                       PortfolioManager, QuantAnalyst, ReflectionAnalyst, RiskManager, SentimentAnalyst,
+                       Trader)
 from llm import LLMClient
 
 
@@ -172,6 +174,15 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         return out
 
     try:
+        # -------------------------------------------- 2b. reflection memory -- #
+        # grade past calls whose 5-day horizon has elapsed, using only prices <= today's as-of date
+        graded = reflection.evaluate(close, asof=close.index[-1])
+        if graded:
+            ctx["reflect_due"] = graded
+            lessons = call(ReflectionAnalyst, "reflection")
+            reflection.save(graded, lessons.get("lessons", {}))
+            emit("reflection", f"{len(graded)} past call(s) graded and lessons written")
+
         # ------------------------------------------------------ 3. analysts -- #
         ctx["macro_view"] = call(MacroStrategist, "analysis")
         ctx["research"] = call(EquityResearchAnalyst, "analysis", tickers=stocks)
@@ -225,6 +236,10 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         exit_cands = [t for t in holdings if t in comp and t not in forced and (
             comp[t]["quant"] < -0.2 or rank[t] > 20 or comp[t]["composite_10"] <= best_unheld - 2)]
         ctx.update(eligible_new=eligible_new, exit_candidates=exit_cands, forced_exits=forced)
+        relevant = set(holdings) | set(eligible_new) | set(exit_cands) | set(ranked[:10])
+        ctx["lessons"] = reflection.lessons_for(relevant, {sectors.get(t) for t in relevant}, regime)
+        ctx["track_record"] = reflection.track_record()
+        ctx["invalidated"] = [i for i in reflection.invalidated(positions, last_px) if i["ticker"] not in forced]
 
         # ---------------------------------------------- 5. PM <-> Risk loop -- #
         max_names = config.TARGET_HOLDINGS_INIT if init_mode else \
@@ -299,6 +314,11 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         for o in orders:
             o["full_exit"] = o["side"] == "SELL" and o["shares"] >= positions.get(o["ticker"], {}).get("shares", 0)
             o["reason"] = _reason(o, comp, pm, risk)
+            o.update(reflection.trade_notes(o, (pm.get("trade_notes") or {}).get(o["ticker"]), comp.get(o["ticker"])),
+                     sector=sectors.get(o["ticker"]))
+            resp = (pm.get("invalidation_responses") or {}).get(o["ticker"])
+            if resp and o["side"] == "SELL" and o["ticker"] in {i["ticker"] for i in ctx.get("invalidated", [])}:
+                o["thesis"] = f"Invalidation hit: {resp}"[:300]
         trader, _ = Trader().run({"orders": orders, "trades_today": db.trades_today(), "cash": cash,
                                   "init_mode": init_mode, "nav_jump_halt": nav_jump})
         trader["skipped_by_planner"] = skipped
@@ -309,6 +329,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         summary = cio["committee_summary"]
         db.finish_run(run_id, status, summary, proposal={
             "mode": mode, "orders": approved, "last_px": last_px, "regime": regime,
+            "asof": str(close.index[-1].date()),
             "benchmark_px": last_px.get(config.BENCHMARK)})
         db.record_snapshot(run_id, last_px, last_px[config.BENCHMARK])
         emit("done", f"Proposal ready — {len(approved)} order(s), status {status}")
@@ -334,7 +355,11 @@ def execute_run(run_id: int) -> dict:
     done = []
     for o in prop["orders"][:room]:   # sells are first in the list, so they fund the buys
         try:
-            done.append(db.execute_trade(run_id, o["ticker"], o["side"], o["shares"], o["price"], o["reason"]))
+            meta = {"thesis": o.get("thesis", ""), "invalidation": o.get("invalidation", ""),
+                    "invalidation_px": o.get("invalidation_px"), "entry_date": prop.get("asof"),
+                    "regime": prop.get("regime"), "sector": o.get("sector"), "signals": o.get("signals", {}),
+                    "horizon_days": 5}
+            done.append(db.execute_trade(run_id, o["ticker"], o["side"], o["shares"], o["price"], o["reason"], meta))
         except ValueError as e:
             db.log_message(run_id, "Trader", Trader.title, "rules", "execution", 0,
                            {"execute": False, "execution_notes": f"{o['ticker']} rejected at execution: {e}"})

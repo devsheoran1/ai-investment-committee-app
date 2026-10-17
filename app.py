@@ -18,6 +18,7 @@ import streamlit as st
 import config
 import data
 import database as db
+import reflection
 import report
 from agents import BRIEF_ROLES, ROSTER
 from orchestrator import RunLimitError, execute_run, run_committee, snapshot_only
@@ -28,7 +29,7 @@ BLUE, LIGHT, GREY = "#1F4E9C", "#9DB9E3", "#5A6B85"
 AVATARS = {
     "CIO": "👔", "Macro Strategist": "🌍", "Equity Research Analyst": "📑",
     "Quant Analyst": "🧠", "Sentiment Analyst": "📰", "Portfolio Manager": "📈",
-    "Risk Manager": "🛡️", "Trader": "💹", "System": "⚙️",
+    "Risk Manager": "🛡️", "Trader": "💹", "System": "⚙️", "Reflection Analyst": "🪞",
 }
 st.markdown(f"""
 <style>
@@ -354,6 +355,24 @@ with tab_trades:
 
 # --------------------------------------------------------------------------- #
 with tab_team:
+    with st.expander("🧠 Lessons learned (reflection memory)", expanded=False):
+        rec = reflection.track_record()
+        refl = db.get_reflections()
+        if refl.empty:
+            st.info("No calls recorded yet. Every executed trade is stored with its thesis and invalidation, "
+                    "then graded vs SPY after 5 trading days.")
+        else:
+            if rec.get("calls"):
+                a, b, c_, d = st.columns(4)
+                a.metric("Graded calls", rec["calls"])
+                b.metric("Hit rate (right / right+wrong)", f"{rec['hit_rate']:.0%}" if rec["hit_rate"] is not None else "–")
+                c_.metric("Last 10", f"{rec['last10_hit_rate']:.0%}" if rec["last10_hit_rate"] is not None else "–")
+                d.metric("Avg excess vs SPY", f"{rec['avg_excess_ret']:+.2%}")
+            show = refl[["decided_at", "ticker", "action", "verdict", "excess_ret", "lesson", "thesis", "invalidation",
+                         "invalidation_px", "eval_date"]].rename(columns={"excess_ret": "excess vs SPY"})
+            st.dataframe(show.style.format({"excess vs SPY": "{:+.1%}", "invalidation_px": "{:,.2f}"}, na_rep="pending"),
+                         width="stretch", hide_index=True)
+            st.caption("Pending rows have no verdict yet (horizon not elapsed). SELL is 'right' when the stock then lagged SPY.")
     st.markdown("Every agent = **a role prompt** + **inputs from Python tools** + **a JSON answer** that Python "
                 "validates. Hard limits live in code; the Trader is pure rules.")
     st.markdown("**How our committee maps onto the brief's four agents:** " +

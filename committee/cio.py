@@ -15,7 +15,7 @@ portfolio (forced risk exits such as stop-losses still execute).
 Hard limits are already enforced by code: if the Risk verdict is "approve", no hard limit
 is breached. Soft concerns (beta band, correlation, concentration) are judgment calls for
 you, not limit breaches; never describe them as hard-limit breaches.
-You see the actual order list (max 5 trades/day). Write the minutes a CIO would circulate."""
+"lessons" are the committee's graded past calls: weigh them, don't over-fit. You see the actual order list (max 5 trades/day). Write the minutes a CIO would circulate."""
     output_schema = """{
   "decision": "approve" | "reject",
   "committee_summary": "max 100 words: what we decided and why",
@@ -42,6 +42,9 @@ You see the actual order list (max 5 trades/day). Write the minutes a CIO would 
             "orders": [{k: o[k] for k in ("ticker", "side", "shares", "notional", "forced_reason")}
                        for o in ctx.get("orders", [])],
             "mode": ctx.get("mode"),
+            "lessons": ctx.get("lessons") or None,
+            "committee_track_record": ctx.get("track_record") if ctx.get("track_record", {}).get("calls") else None,
+            "invalidated_holdings": [i["ticker"] for i in ctx.get("invalidated", [])] or None,
         }
         return f"INVESTMENT COMMITTEE PACK:\n{compact(brief)}"
 
