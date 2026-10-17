@@ -100,6 +100,61 @@ Changed on Oct 17, so tell the owners:
 · #4 trade CSV + prices.csv ✅ · #5 agents.py / finance.db ✅ · #6 daily report + 15-day summary ✅ · #7 20-day replay ⏳ · #8 IPS mapping ✅.
 Note: CLAUDE.md is a zipped skill whose §3 still describes the pre-Oct-17 code; regenerate it.
 
+## Add-ons shipped Oct 18 (research shortlist items 1 and 2 of the Kronos/reflection session)
+
+**Kronos forecaster + model horse race** (`forecasters/`, `vendor/kronos/`)
+- Kronos-mini (4.1M params, `NeoQuasar/Kronos-mini` + `Kronos-Tokenizer-2k`, MIT) vendored from
+  github.com/shiyu-coder/Kronos, **commit `67b630e67f6a18c9e9be918d9b4337c960db1e9a`** (only `model/`, plus LICENSE).
+  Two local changes, listed in `vendor/kronos/SOURCE.txt`: relative import in `kronos.py`, and a
+  `return_samples` flag so we get per-path outputs (needed for `p_up` and dispersion).
+- `forecasters/kronos_fc.py`: 400-day OHLCV lookback, 5-day horizon, 5 sampled paths (3 in the backtest),
+  MPS with CPU retry. Returns `exp_ret_5d`, `p_up`, `dispersion` per ticker. Cached per data date. Any failure returns None
+  and the committee runs LSTM-only (tested with a bogus model id).
+- `forecasters/horse_race.py`: LSTM vs Kronos vs naive 5d-momentum on the SAME 6 non-overlapping 5-day origins x shortlist
+  (~228 ticker-origins). Scores hit rate, mean rank IC, IC t-stat. Blend weights = max(IC, 0), normalised over LSTM and Kronos.
+- `data._download` now keeps High/Low (Kronos needs OHLC). `forecaster.forecast` exposes `oos_preds`.
+- Cost on the M2 (8GB): +29 s per run (target < 60 s), whole mock run 32 s, peak RSS about 540 MB.
+- **First scoreboard (Oct 17 data, 38 names):** LSTM hit 54% / IC +0.008 (t +0.1); Kronos hit 50-55% / IC -0.04 to -0.05
+  (t -0.6 to -0.8); naive 5d momentum hit 57% / IC +0.137 (t +2.2). Kronos did NOT beat the LSTM or the baseline out of sample,
+  and the simplest momentum rule beat both. With 6 origins these t-stats are weak evidence: say so in the presentation.
+
+**Reflection memory** (`reflection.py`, `committee/reflector.py`, table `reflections`)
+- Every executed trade stores a call: thesis, invalidation text + price level, entry price/date, regime, sector, signals.
+  PM can supply `trade_notes`; otherwise a deterministic default fills both, so no trade is stored without them.
+- Each run first grades calls whose 5-day horizon has elapsed, using only prices <= the as-of date (unit-tested against
+  look-ahead), vs SPY. Verdict: right / wrong / flat (+/-1% excess band; a SELL is right if the stock then lagged SPY).
+  One batched gpt-oss-20b call (`Reflection Analyst`, stage `reflection`) writes the lessons; mock lessons are deterministic.
+- PM and CIO get <= 8 lessons (<= 2400 chars, about 600 tokens): same ticker > same sector > same regime > recent, plus the
+  committee's running hit rate. Held names whose invalidation price is hit are flagged; the PM must answer each with
+  "exit" or "hold" + reason. Unanswered = treated as an exit candidate.
+- UI: "Lessons learned" expander in the Committee tab, horse-race table in the Trading Floor transcript, both in the daily report.
+- Tests: `tests/test_kronos.py`, `tests/test_reflection.py`, plus a seeded integration run (3 fake past trades, mock x2).
+
+**Real Groq runs of this session (Oct 18, throwaway DB, gpt-oss-120b/20b):** init + 2 daily runs with a seeded book.
+Per run: 9-12 LLM calls, about 23-27K prompt + 5-7K completion tokens, 123-150 s wall, 4-7 rate-limit (429) waits per run
+(handled automatically; free tier is 8K tokens/min per model), 0 hard failures after the fixes below. Mock run: 32 s, ~540 MB peak.
+Real lessons read like: "Oil breakout signal drove XOM above SPY in neutral regime, validating breakout thesis in Energy."
+
+**Bugs found by the real Groq runs and fixed (they would have bitten in the live window):**
+1. Init could end with 6-9 names and a breached 35% sector cap: the optimiser now guarantees >= 10 names at initialisation,
+   gives each a floor weight above the $25K minimum trade (no dust dropped at the end), and widens the candidate pool when the
+   caps are infeasible instead of falling back to a portfolio that breaches them. Regression test: `tests/test_optimiser.py`.
+2. The CIO LLM rejected a risk-approved *initial* portfolio ("maintaining current holdings", there were none). On the init run
+   the CIO can now dissent but not stand the fund down (Brief: start fully invested).
+3. gpt-oss-20b sometimes returns every Quant score as 0.0: a parseable all-zero reply now falls back to the rule-based
+   momentum/LSTM score, flagged in the note. A real failure/timeout still gives neutral (IPS D11).
+4. Groq 413 "request too large" on the Quant call (prompt + max_tokens counted against the minute limit): Quant prompt is now a
+   column table (names once, not per ticker), default output budget 3000, and a 413 retries with a halved budget.
+   `llm.usage` now also counts `rate_limited`.
+
+**Contract changes (all optional / additive, nothing removed):**
+- Quant output: `model_scoreboard` (str); each `signals[t]` may carry `kronos_ret`, `kronos_p_up`. Quant prompt gets
+  `kronos_ret`, `kronos_p_up`, `agree` per ticker and a one-line scoreboard.
+- PM output: `trade_notes`, `invalidation_responses`. PM/CIO prompt: `lessons`, `committee_track_record`, `invalidated_holdings`.
+- New agent `Reflection Analyst` (not in ROSTER, so the "8-member committee" count is unchanged).
+- `database.execute_trade(..., meta=None)` new optional arg. `llm.usage` gains `rate_limited`.
+- Owners to tell: Quant (Kronos fields), PM (thesis discipline), Risk/CIO (lessons block).
+
 ## Known issues / watch list
 
 - yfinance `Ticker.news` returns nothing in v1.7, so we use RSS (fixed Oct 17).
@@ -112,6 +167,15 @@ Note: CLAUDE.md is a zipped skill whose §3 still describes the pre-Oct-17 code;
 - Screener's low-vol factor (15%) pulls toward low-beta names, which works against the C1.4 beta bands.
   Consider moving that 15% to 3m momentum.
 - The ±5% drift band can leave cash at 5–6% for a day after exits when there's no trade slot to reinvest.
+
+- (add-on session) see the list below
+- **Blend weights follow the spec literally:** with LSTM IC +0.008 (t +0.1) the LSTM gets 100% of the model blend. That is
+  noise-level skill; the Quant prompt carries the t-stat so the agent can discount it. A minimum-t floor is worth considering.
+- **Existing LSTM leakage caveat:** `forecaster._build_dataset` scales each stock by its full-sample volatility, including the
+  test window. Mild, but its OOS numbers are slightly flattering vs Kronos (which normalises per window).
+- Reflection needs 5 trading days of history before the first lesson exists; the live window is short, so expect only a
+  handful of graded calls (about 3 to 8 per week). Present it as a demo of the mechanism, not as alpha.
+- A portfolio below 10 names cannot be rebuilt inside the 5-trade cap (hard holdings rule). Only matters if exits shrink the book.
 
 ## Owners
 

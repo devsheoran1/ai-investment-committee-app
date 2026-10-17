@@ -43,7 +43,7 @@ class LLMClient:
             raise LLMError(f"Unknown LLM_PROVIDER '{self.provider}'. "
                            f"Pick one of {list(config.PROVIDERS)}")
         self.cfg = config.PROVIDERS[self.provider]
-        self.usage = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+        self.usage = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "rate_limited": 0}
         self._client = None
         if self.provider != "mock":
             from openai import OpenAI
@@ -77,11 +77,12 @@ class LLMClient:
                     {"role": "user", "content": user}]
         use_json_mode = self.cfg.get("json_mode", False)
         last_err: Exception | None = None
+        max_out = 3000   # Groq counts prompt + max_tokens against the per-minute limit: keep it modest
 
         for attempt in range(config.LLM_MAX_RETRIES):
             try:
                 kwargs = dict(model=model, messages=messages,
-                              temperature=config.LLM_TEMPERATURE, max_tokens=4000)
+                              temperature=config.LLM_TEMPERATURE, max_tokens=max_out)
                 if use_json_mode:
                     kwargs["response_format"] = {"type": "json_object"}
                 if self.cfg.get("extra"):
@@ -105,8 +106,12 @@ class LLMClient:
                 last_err = e
                 status = getattr(e, "status_code", None)
                 if status == 429:
+                    self.usage["rate_limited"] += 1
                     wait = _retry_after(e) or min(60, 5 * 2 ** attempt)
                     time.sleep(wait)
+                    continue
+                if status == 413 and max_out > 1000:
+                    max_out = max(1000, max_out // 2)    # "request too large": shrink the output budget and retry
                     continue
                 if status == 400 and use_json_mode:
                     # some models/providers reject JSON mode -> fall back to plain text

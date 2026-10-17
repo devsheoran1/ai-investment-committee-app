@@ -163,7 +163,7 @@ def optimise(convictions: dict[str, float], prices: pd.DataFrame, sectors: dict[
              asset_types: dict[str, str], equity_exposure: float, regime: str, vix: float,
              max_names: int, risk_aversion: float = 4.0, diversification: float = 0.5,
              lev_cap_override: float | None = None, min_weight: float = 0.01,
-             lookback: int = 252) -> dict[str, float]:
+             ensure_min: bool = False, lookback: int = 252) -> dict[str, float]:
     """Mean-variance on the PM's convictions, maximise
         w'mu - (risk_aversion/2) w'Sigma w - diversification * ||w - w_eq||^2
     with every IPS limit as a constraint. Only the top `max_names` convictions
@@ -188,6 +188,10 @@ def optimise(convictions: dict[str, float], prices: pd.DataFrame, sectors: dict[
     stocks = [t for t in ranked if convictions[t] > 0]
     if len(stocks) < config.MIN_HOLDINGS:
         stocks += [t for t in ranked if -0.5 < convictions[t] <= 0][:config.MIN_HOLDINGS - len(stocks)]
+    if ensure_min and len(stocks) < config.MIN_HOLDINGS:     # initialisation must reach 10 names (Brief §1)
+        stocks += [t for t in ranked if t not in stocks][:config.MIN_HOLDINGS - len(stocks)]
+    floor_conv = -0.99 if ensure_min else -0.5
+    pool = [t for t in ranked if t not in stocks and convictions[t] > floor_conv]   # extra names if the caps are infeasible
     lev = sorted([t for t in convictions if kind(t) == "leveraged_etf" and convictions[t] > 0],
                  key=lambda t: -convictions[t]) if lev_cap > 0 else []
     inv = sorted([t for t in convictions if kind(t) == "inverse_etf"], key=lambda t: -convictions[t]) \
@@ -198,22 +202,28 @@ def optimise(convictions: dict[str, float], prices: pd.DataFrame, sectors: dict[
     if not tickers:
         return {}
 
-    keep = list(tickers)
-    w = None
-    for _ in range(4):
-        w, ub = _solve(keep, convictions, prices, sectors, kind, equity_exposure, lev_cap, inv_lo, inv_hi,
-                       risk_aversion, diversification, lookback, beta_band=R["beta"])
-        small = [t for t, x in zip(keep, w) if x < min_weight]
-        if not small or len(keep) - len(small) < config.MIN_HOLDINGS:
+    # If the sector/position caps can't be met with this candidate set (e.g. 6 names in 3 sectors cannot
+    # satisfy a 35% sector cap), widen the set with the next-best names instead of falling back to a
+    # portfolio that breaches the caps.
+    for extra in (0, 4, 8, 14):
+        keep = list(dict.fromkeys(tickers + [t for t in pool[:extra] if t in prices.columns]))
+        for _ in range(4):
+            w, ub, ok = _solve(keep, convictions, prices, sectors, kind, equity_exposure, lev_cap, inv_lo, inv_hi,
+                               risk_aversion, diversification, lookback, beta_band=R["beta"],
+                               lb=min_weight * 1.02 if ensure_min else 0.0)
+            small = [t for t, x in zip(keep, w) if x < min_weight]
+            if not small or len(keep) - len(small) < config.MIN_HOLDINGS:
+                break
+            keep = [t for t in keep if t not in small]
+        if ok:
             break
-        keep = [t for t in keep if t not in small]
     w = np.minimum(np.clip(w, 0, None), ub)
     # floor (not round) so the target never needs more cash than we have
     return {t: math.floor(float(x) * 1e4) / 1e4 for t, x in zip(keep, w) if x >= min_weight * 0.999}
 
 
 def _solve(tickers, convictions, prices, sectors, kind, equity_exposure, lev_cap, inv_lo, inv_hi,
-           risk_aversion, diversification, lookback, beta_band=None):
+           risk_aversion, diversification, lookback, beta_band=None, lb=0.0):
     L = config.RISK_LIMITS
     buf = 0.995   # small buffer under each cap so whole-share rounding never breaches it
     rets = np.log(prices[tickers]).diff().dropna().tail(lookback)
@@ -228,7 +238,7 @@ def _solve(tickers, convictions, prices, sectors, kind, equity_exposure, lev_cap
         ub.append(buf * (L["max_single_weight"] if k == "stock" else
                          min(L["max_leveraged_each"], lev_cap) if k == "leveraged_etf" else inv_hi))
     ub = np.array(ub)
-    bounds = [(0.0, b) for b in ub]
+    bounds = [(min(lb, 0.5 * b), b) for b in ub]   # lb: every selected name must clear the minimum trade size
     cons = [{"type": "eq", "fun": lambda w: w.sum() - equity_exposure}]
     for sec in {sectors.get(t, "Unknown") for t in tickers if kind(t) == "stock"}:
         idx = [i for i, t in enumerate(tickers) if kind(t) == "stock" and sectors.get(t) == sec]
@@ -265,7 +275,7 @@ def _solve(tickers, convictions, prices, sectors, kind, equity_exposure, lev_cap
     if res is None:
         res = minimize(neg_util, w0, method="SLSQP", bounds=bounds, constraints=cons,
                        options={"maxiter": 500, "ftol": 1e-10})
-    return (res.x if res.success else w0), ub
+    return (res.x if res.success else w0), ub, bool(res.success)
 
 
 # --------------------------------------------------------------------------- #

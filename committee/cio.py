@@ -15,7 +15,8 @@ portfolio (forced risk exits such as stop-losses still execute).
 Hard limits are already enforced by code: if the Risk verdict is "approve", no hard limit
 is breached. Soft concerns (beta band, correlation, concentration) are judgment calls for
 you, not limit breaches; never describe them as hard-limit breaches.
-"lessons" are the committee's graded past calls: weigh them, don't over-fit. You see the actual order list (max 5 trades/day). Write the minutes a CIO would circulate."""
+On the INITIALISATION run (mode "init") the fund has no book yet and must deploy: approve a risk-approved proposal
+and record any concern as dissent. "lessons" are the committee's graded past calls: weigh them, don't over-fit. You see the actual order list (max 5 trades/day). Write the minutes a CIO would circulate."""
     output_schema = """{
   "decision": "approve" | "reject",
   "committee_summary": "max 100 words: what we decided and why",
@@ -58,6 +59,8 @@ you, not limit breaches; never describe them as hard-limit breaches.
 
     def validate(self, out, ctx):
         d = str(out.get("decision", "reject")).lower()
+        if ctx.get("mode") == "init" and ctx["risk_decision"]["decision"] == "approve":
+            d = "approve"   # Brief §1: the fund must start fully invested; the CIO can dissent but not stand the fund down
         if ctx["risk_decision"]["decision"] != "approve" or ctx.get("no_new_trades"):
             d = "reject"  # CIO can't overrule a Risk veto
         return {"decision": d if d in ("approve", "reject") else "reject",

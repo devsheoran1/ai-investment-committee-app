@@ -46,6 +46,7 @@ def _infer(dev, frames: list[pd.DataFrame], dates: pd.DatetimeIndex, future: pd.
     import torch
     from vendor.kronos.model.kronos import auto_regressive_inference, calc_time_stamps
     tok, mdl = _load(dev)
+    torch.manual_seed(42)        # sampled paths are random: seed so the scoreboard is reproducible
     cols = ["open", "high", "low", "close", "volume", "amount"]
     x_stamp = calc_time_stamps(pd.Series(dates)).values.astype(np.float32)
     y_stamp = calc_time_stamps(pd.Series(future)).values.astype(np.float32)

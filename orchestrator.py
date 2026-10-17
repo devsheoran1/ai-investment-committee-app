@@ -249,7 +249,8 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
             target = analytics.optimise(pm["convictions"], close, sectors, asset_types, pm["equity_exposure"],
                                         regime, macro["vix_level"], max_names, risk_aversion=risk_aversion,
                                         lev_cap_override=lev_override,
-                                        min_weight=max(0.01, config.MIN_TRADE_NOTIONAL / nav * 1.05))
+                                        min_weight=max(0.01, config.MIN_TRADE_NOTIONAL / nav * 1.05),
+                                        ensure_min=init_mode)
             if not init_mode:   # held names the PM didn't exit stay at their weight unless resized
                 for t, w in current_w.items():
                     if (t not in target and pm["convictions"].get(t, 0) > -0.5 and t not in forced
