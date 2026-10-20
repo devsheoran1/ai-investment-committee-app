@@ -125,6 +125,11 @@ def init_db(reset: bool = False) -> None:
         for col in ("name", "signals", "proposed_at"):
             if col not in cols:
                 c.execute(f"ALTER TABLE transactions ADD COLUMN {col} TEXT")
+        mcols = {r[1] for r in c.execute("PRAGMA table_info(messages)")}
+        for col, typ in (("system_prompt", "TEXT"), ("user_prompt", "TEXT"), ("raw_output", "TEXT"),
+                         ("tokens", "INTEGER"), ("latency_s", "REAL")):
+            if col not in mcols:
+                c.execute(f"ALTER TABLE messages ADD COLUMN {col} {typ}")
         if c.execute("SELECT COUNT(*) FROM simulation").fetchone()[0] == 0:
             c.execute("INSERT INTO simulation (id, current_date, cash_balance, total_portfolio_value, inception_date) "
                       "VALUES (1, ?, ?, ?, NULL)", (today(), config.STARTING_CAPITAL, config.STARTING_CAPITAL))
@@ -173,11 +178,14 @@ def mark_stale_runs() -> None:
 
 
 def log_message(run_id: int, agent: str, title: str, model: str, stage: str,
-                rnd: int, content: dict) -> None:
+                rnd: int, content: dict, prompt: dict | None = None) -> None:
+    """prompt (Stage 8): {system, user, raw, tokens, latency_s} -> 'what this agent saw' in the dashboard."""
+    p = prompt or {}
     with conn() as c:
-        c.execute("INSERT INTO messages (run_id, ts, agent, title, model, stage, round, content) "
-                  "VALUES (?,?,?,?,?,?,?,?)",
-                  (run_id, _now(), agent, title, model, stage, rnd, json.dumps(content, default=str)))
+        c.execute("INSERT INTO messages (run_id, ts, agent, title, model, stage, round, content, system_prompt, "
+                  "user_prompt, raw_output, tokens, latency_s) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                  (run_id, _now(), agent, title, model, stage, rnd, json.dumps(content, default=str),
+                   p.get("system"), p.get("user"), p.get("raw"), p.get("tokens"), p.get("latency_s")))
 
 
 def get_runs() -> pd.DataFrame:
@@ -274,6 +282,9 @@ def record_snapshot(run_id: int | None, last_px: dict[str, float], benchmark_px:
     cash = get_cash()
     invested = sum(p["shares"] * last_px[t] for t, p in pos.items() if t in last_px)
     nav = cash + invested
+    import nyse_calendar
+    if not nyse_calendar.is_trading_day(today()):          # Stage 8: never log a phantom weekend/holiday day
+        return nav
     with conn() as c:
         c.execute("INSERT INTO daily_snapshots (date, ts, total_equity, cash, invested, benchmark_px, n_positions, run_id) "
                   "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET ts=excluded.ts, "

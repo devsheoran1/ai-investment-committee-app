@@ -239,7 +239,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
             failed.append(agent.name)
             out, model = agent.validate({}, {**ctx, **extra}), f"FAILED ({str(e)[:120]})"
             out["agent_failed"] = True
-        db.log_message(run_id, agent.name, agent.title, model, stage, rnd, out)
+        db.log_message(run_id, agent.name, agent.title, model, stage, rnd, out, prompt=getattr(agent, "last_call", None))
         return out
 
     try:
@@ -526,6 +526,13 @@ def execute_run(run_id: int, provider: str | None = None, prices: dict | None = 
     proposal's. A proposal older than 2 hours is refused (Oct 20: proposed 08:14, executed 13:34 at stale prices).
     After execution the Trade Rationale Writer turns each trade's facts into plain English (IPS C0.4/E2)."""
     import datetime as _dt
+    import nyse_calendar
+    halt_file = os.path.join(config.BASE_DIR, "HALT")
+    if os.path.exists(halt_file):                                       # Stage 8 kill switch
+        raise RuntimeError("Execution refused: a HALT file exists in the repo root. Delete it to resume trading "
+                           "(analysis runs still work).")
+    if prices is None and not nyse_calendar.is_trading_day(db.today()):
+        raise RuntimeError(f"Execution refused: {db.today()} is not an NYSE trading day.")
     prop = db.get_proposal(run_id)
     runs = db.get_runs().set_index("id")
     if prop is None or runs.loc[run_id, "status"] != "proposed":
@@ -563,6 +570,8 @@ def execute_run(run_id: int, provider: str | None = None, prices: dict | None = 
     if facts:
         _write_rationales(run_id, facts, prop, provider or runs.loc[run_id, "provider"])
     db.set_run_status(run_id, "executed" if done else "no_trade")
+    if prices is None or not str(config.DB_PATH).endswith("_replay.db"):
+        _backup()
     nav = db.record_snapshot(run_id, prop["last_px"], prop["benchmark_px"])
     csv_path = db.export_trades_csv()
     rep = report.daily_report()
@@ -683,7 +692,19 @@ def snapshot_only() -> float:
     px = _last_prices(close, tickers)
     nav = db.record_snapshot(None, px, px[config.BENCHMARK])
     report.daily_report()
+    _backup()
     return nav
+
+
+def _backup() -> None:
+    """Stage 8: finance.db is a gitignored deliverable -> copy it (and trades/prices/reports) after every live write."""
+    if os.path.abspath(config.DB_PATH) != os.path.join(config.BASE_DIR, "finance.db"):
+        return                                                          # tests / replay: nothing to back up
+    import subprocess
+    try:
+        subprocess.run([os.path.join(config.BASE_DIR, "backup.sh")], capture_output=True, timeout=60)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _lev_reviews(positions, close, last_px, asset_types) -> list[dict]:
@@ -764,6 +785,9 @@ if __name__ == "__main__":
     if args.replay:
         print(json.dumps(replay(args.replay, args.provider or "mock"), indent=1, default=str))
         raise SystemExit
+    if args.execute and os.path.exists(os.path.join(config.BASE_DIR, "HALT")):
+        print("HALT file present: running the analysis only, no execution (delete HALT to trade).")
+        args.execute = False
     res = intraday_recheck(args.provider, execute=args.execute) if args.recheck else \
         run_committee(args.provider, execute=args.execute)
     print(json.dumps({k: v for k, v in res.items() if k != "orders"}, indent=2, default=str))

@@ -35,23 +35,27 @@ Read this file and `PROJECT_NOTES.md` before doing anything.
 - **Division of labour:** the LLM judges; Python does all the maths and enforces the hard limits.
 - **Machine:** Mac M2, 8GB RAM. Use `/opt/miniconda3/bin/python3 -m streamlit run app.py`.
 
-## 3. Code map
-- **Core files:** `app.py`, `orchestrator.py`, `analytics.py`, `screener.py`, `data.py`, `database.py`, `forecaster.py`, `llm.py`, `report.py`, `config.py`.
-- **Agents:** they live in `committee/`; `agents.py` maps them onto the brief's Data/Strategy/Risk/Execution roles.
-- **Runtime outputs:**
-  - Live fund: `finance.db`. Synthetic days go to `finance_synthetic_sandbox.db`.
-  - `trades.csv` and `prices.csv`.
-  - Reports: `reports/daily_<date>.md`; `python report.py --final` writes `reports/final_summary.docx`.
+## 3. Code map (regenerated Oct 20, end of the Oct 20 spec)
+- **Pipeline** (`orchestrator.py`): data → two-stage screener (`screener.py`) → regime rules → Morning Brief (`morning_brief.py`,
+  Gemini Flash) → reflection grading (`reflection.py`) → Macro / Research / Quant / Sentiment (`committee/`) → composite →
+  PM → Devil's Advocate → PM answers → optimiser → `plan_orders` (≤ 5 trades, cash ≤ 3% upsizing, 10-name floor) →
+  Risk Manager `check_book` on the post-trade book (3 rounds, then mechanical de-risk) → CIO → rule-based Trader.
+  Execute is a separate step (`execute_run`: execution-time prices, 2 h stale guard, HALT kill switch, Trade Rationale
+  Writer, backup). Other entry points: `--recheck` (C4.5 intraday news), `--snapshot` (21:45 after-close), `--replay N`, `--reset`.
+- **Models** (`forecaster.py`, `forecasters/`): walk-forward LSTM (CPU), Kronos-mini (vendored), LightGBM (subprocess),
+  horse race with C3.4 weights. FinBERT in `finbert.py`. Attribution in `attribution.py`. Calendar in `nyse_calendar.py`.
+- **Data** (`data.py`): S&P 500 + 14 leveraged / 4 inverse ETFs, yfinance OHLCV (3y), fundamentals, earnings (B7), news
+  (Yahoo/Google/SEC 8-K), macro + sector ETFs.
+- **Runtime outputs:** live `finance.db`; replay `finance_replay.db`; `trades.csv` (E1 columns), `prices.csv`;
+  `reports/daily_<date>.md`, `reports/final_summary.docx`; `backups/<ts>/` after every execute/snapshot.
+- **Tests:** `tests/` (one file per stage); full status in `PROJECT_NOTES.md`.
 
 ## 4. Next up (in order)
-1. **20-day replay mode** (IPS D6–D9): separate `*_replay.db`, no look-ahead, prices-only (fundamentals frozen at day 1 is the fallback).
-2. **First git commit.** The repo has no commits yet. Check that `.env` is not staged.
-3. **C11 drawdown rule:** get Dev's sign-off.
-4. **B7 earnings calendar.** It feeds C4.3 and the C5.3 fast-track.
-5. **Quant laziness with gpt-oss-20b** (0.0 scores): split the batch, or move Quant to 120b.
-6. **Add-ons** (below).
-7. **Dashboard redesign** (§6).
-8. **Presentation.**
+1. **Live init Oct 22, 14:30 Madrid** (Dev): `streamlit run app.py` → Run Agents → read everything → Execute.
+2. Dev rewrites the Quant (C3) and Risk (C6) `role_prompt`s; the code around them is final.
+3. Stage 9 dashboard redesign (Streamlit themed) if not finished; then the presentation.
+4. Decide: stop-loss cooldown (re-buying a name the day after its stop-loss); 0–10 scale for all agents.
+5. Rotate the leaked Groq key; set `SEC_USER_AGENT` in `.env` to a team contact.
 
 ## 5. Research-backed add-ons (one per cycle; default order)
 1. **Reflection memory** (from TradingAgents, ~98K stars): take the realized return vs SPY of past calls, turn it into a short lesson, and feed it to the PM.

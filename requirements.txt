@@ -22,3 +22,5 @@ transformers==4.57.6
 lightgbm==4.7.0
 # Word report charts (Stage 7)
 matplotlib==3.11.2
+# Dashboard screenshots (Stage 9, dev only)
+playwright==1.64.0

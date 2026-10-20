@@ -12,6 +12,8 @@ from .base import Agent, compact, clip
 POS = ("beat", "surge", "record", "upgrade", "raises", "growth", "strong", "rally", "wins", "soar", "buy")
 NEG = ("miss", "falls", "cut", "downgrade", "lawsuit", "probe", "weak", "plunge", "recall", "slump", "fine")
 LAZY_SHARE = 0.70
+MAX_HEADS_TO_LLM = 6          # FinBERT scores all 10; the LLM reads the 6 newest (Groq 8K tokens/min request size)
+CHUNK_CHARS = 12000           # ~3K tokens of headlines per call; bigger shortlists are split into several calls
 
 
 class SentimentAnalyst(Agent):
@@ -40,8 +42,8 @@ If a ticker's headlines are all noise, score it 0 and say "noise only". Tickers 
             heads = ctx["news"].get(t) or []
             if not heads:
                 continue
-            rows[t] = [{"id": i, "ts": h.get("ts", ""), "src": h.get("source", ""), "finbert": h.get("finbert"),
-                        "h": h.get("title", "")[:140]} for i, h in enumerate(heads)]
+            rows[t] = [{"id": i, "ts": h.get("ts", "")[5:], "src": h.get("source", "")[:20], "finbert": h.get("finbert"),
+                        "h": h.get("title", "")[:110]} for i, h in enumerate(heads[:MAX_HEADS_TO_LLM])]
         return rows
 
     def build_prompt(self, ctx):
@@ -65,6 +67,26 @@ If a ticker's headlines are all noise, score it 0 and say "noise only". Tickers 
         return {"sentiment": out, "market_mood": "[mock] FinBERT average per name"}
 
     def run(self, ctx, llm):
+        """Batches the names so no single request exceeds Groq's request-size limit (Oct 20: 413 on 43 names)."""
+        rows = self._rows(ctx)
+        chunks, cur, size = [], [], 0
+        for t in ctx["tickers"]:
+            n = len(compact(rows.get(t, [])))
+            if cur and size + n > CHUNK_CHARS:
+                chunks.append(cur); cur, size = [], 0
+            cur.append(t); size += n
+        if cur:
+            chunks.append(cur)
+        if len(chunks) <= 1:
+            return self._run_one(ctx, llm)
+        merged, moods, models = {}, [], []
+        for ch in chunks:
+            o, m = self._run_one({**ctx, "tickers": ch}, llm)
+            merged.update(o["sentiment"]); moods.append(o.get("market_mood", "")); models.append(m)
+        return {"sentiment": {t: merged[t] for t in ctx["tickers"]}, "market_mood": next((x for x in moods if x), ""),
+                "batches": len(chunks)}, " + ".join(dict.fromkeys(models)) + f" ({len(chunks)} batches)"
+
+    def _run_one(self, ctx, llm):
         out, model = super().run(ctx, llm)
         scored = [v for v in out["sentiment"].values() if v["score"] is not None]
         if llm.provider != "mock" and len(scored) >= 5 and \

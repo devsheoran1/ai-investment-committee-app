@@ -66,11 +66,16 @@ class LLMClient:
     def chat_json(self, system: str, user: str, tier: str = "fast",
                   agent_name: str | None = None, mock_fn=None) -> tuple[dict, str]:
         """Returns (parsed_json, model_used)."""
+        import time as _time
+        self.last = {"system": system, "user": user, "raw": None, "tokens": 0, "latency_s": 0.0}
         if self.provider == "mock":
             if mock_fn is None:
                 raise LLMError("mock provider needs a mock_fn")
             self.usage["calls"] += 1
-            return mock_fn(), "mock"
+            out = mock_fn()
+            self.last["raw"] = json.dumps(out, default=str)[:20000]
+            return out, "mock"
+        _t0 = _time.time()
 
         model = self.model_for(tier, agent_name)
         messages = [{"role": "system", "content": system},
@@ -93,6 +98,8 @@ class LLMClient:
                     self.usage["prompt_tokens"] += resp.usage.prompt_tokens or 0
                     self.usage["completion_tokens"] += resp.usage.completion_tokens or 0
                 content = resp.choices[0].message.content or ""
+                self.last.update(raw=content[:20000], latency_s=round(_time.time() - _t0, 2),
+                                 tokens=(resp.usage.prompt_tokens + resp.usage.completion_tokens) if resp.usage else 0)
                 try:
                     return _extract_json(content), model
                 except (ValueError, json.JSONDecodeError) as e:

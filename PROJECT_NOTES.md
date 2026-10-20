@@ -215,6 +215,16 @@ live init is Oct 22 14:30 Madrid). 7 runs, 20 trades (17 buys / 3 sells). What b
 - Fixed: on the init day every buy was labelled a "replacement to keep 10 holdings" (replenish rule now daily runs only).
 - Tests: `tests/test_attribution.py`.
 
+## Stage 8 (Oct 20): close-out
+- **Kill switch**: a file named `HALT` in the repo root makes `--execute` and the dashboard's Execute refuse (analysis still runs).
+- **Backups**: `backup.sh` copies `finance.db`, `trades.csv`, `prices.csv`, `reports/` to `backups/<YYYY-MM-DD_HHMM>/`
+  (gitignored); called automatically after every live execute and snapshot (never for tests or the replay).
+- **NYSE calendar** (`nyse_calendar.py`, 2026 holidays + early closes hardcoded): no snapshot is logged on a weekend or
+  holiday, and execution on a non-trading day is refused.
+- **Prompt logging**: every agent message now stores the full system prompt, user prompt, raw output, tokens and latency
+  (`messages` columns, auto-migrated) → "what this agent saw" for the dashboard and the presentation.
+- Tests: `tests/test_closeout.py`.
+
 ## Conflicts and how we resolved them
 
 | # | Conflict | Resolution |
@@ -369,14 +379,17 @@ Real lessons read like: "Oil breakout signal drove XOM above SPY in neutral regi
   handful of graded calls (about 3 to 8 per week). Present it as a demo of the mechanism, not as alpha.
 - Mock runs re-buy a name the day after its stop-loss (no cooldown rule in the IPS). Worth deciding whether stopped-out names sit out N days.
 
-## Owners
+## Owners (IPS C0.2)
 
 | Agent / area | Owner |
 |---|---|
-| Macro Strategist + `data.get_macro` | |
-| Equity Research + fundamentals | |
-| Quant + LSTM (`forecaster.py`) | |
-| Sentiment + news | |
-| PM + optimiser | |
-| Risk Manager + risk engine | |
-| CIO, Trader, dashboard | |
+| C1 Macro Strategist (+ `data.get_macro`, regime rules) | Rima |
+| C2 Equity Research (+ fundamentals, earnings preview) | Marina |
+| C3 Quant (+ LSTM, Kronos, LightGBM, horse race) | Jayesh |
+| C4 Sentiment (+ news, FinBERT) | Mer |
+| C5 Portfolio Manager (+ optimiser, plan_orders) | Rima |
+| C6 Risk Manager (+ risk engine, check_book) | Dev |
+| C7 CIO | Mer |
+| C8 Trader (rule-based execution) | Marina |
+| Devil's Advocate, Trade Rationale Writer, Morning Brief | team (unassigned) |
+| Presentation intro + ending | Dev + Jayesh |

@@ -74,4 +74,5 @@ class Agent:
             prompt = f"MORNING BRIEF (today, pre-open):\n{ctx['morning_brief'][:900]}\n\n{prompt}"
         raw, model = llm.chat_json(self.system_prompt, prompt, tier=self.tier,
                                    agent_name=self.name, mock_fn=lambda: self.mock(ctx))
+        self.last_call = dict(getattr(llm, "last", {}) or {})          # Stage 8: what this agent saw
         return self.validate(raw if isinstance(raw, dict) else {}, ctx), model
