@@ -50,8 +50,6 @@ If a ticker's headlines are all noise, score it 0 and say "noise only". Tickers 
         earn = {t: e for t, e in (ctx.get("earnings") or {}).items() if t in rows and e}
         if earn:
             txt += f"\n\nEARNINGS CONTEXT (B7):\n{compact(earn)}"
-        if ctx.get("morning_brief"):
-            txt += f"\n\nMORNING BRIEF:\n{ctx['morning_brief'][:1200]}"
         return txt
 
     def mock(self, ctx):

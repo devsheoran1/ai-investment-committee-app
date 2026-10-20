@@ -43,8 +43,8 @@ PROVIDERS = {
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
         "key_env": "GEMINI_API_KEY",
         # Check https://ai.google.dev/gemini-api/docs/models for current free models
-        "fast": "gemini-2.5-flash-lite",
-        "smart": "gemini-2.5-flash",
+        "fast": "gemini-3.5-flash-lite",      # 2.5 models are retired for new keys (checked Oct 20)
+        "smart": "gemini-3.5-flash",
         "extra": {},
         "json_mode": True,
     },
@@ -178,6 +178,30 @@ RISK_OFF_HIGH_VIX = 30                  # IPS C1.4: inverse hedge up to 25% if V
 MAX_RISK_ROUNDS = 3                     # IPS C6.5 (Oct 20)
 # IPS C6.3: the only soft concerns allowed to reject
 SOFT_REJECT = {"min_effective_positions": 4, "max_top3_pair_corr": 0.90, "max_adv_fraction": 0.25}
+
+# --------------------------------------------------------------------------- #
+# Daily market awareness (Stage 5, Oct 20)
+# --------------------------------------------------------------------------- #
+MORNING_BRIEF_PROVIDER = "gemini"       # C0.3 / spec: Gemini Flash free tier; falls back to gpt-oss-120b on Groq
+JUNIOR_GEMINI_FALLBACK = False          # if True, a junior agent hitting repeated Groq 429s retries on Gemini Flash
+JUNIOR_GEMINI_FALLBACK_AFTER_429 = 3
+# C1.2 macro calendar for the live window (Madrid dates; sources: federalreserve.gov via fedratecalc, BLS, BEA)
+MACRO_CALENDAR = [
+    {"date": "2026-10-28", "event": "FOMC rate decision (14:00 ET / 19:00 Madrid), press conference 14:30 ET"},
+    {"date": "2026-10-27", "event": "FOMC meeting day 1"},
+    {"date": "2026-10-29", "event": "PCE / Personal Income & Outlays (Sep) + Q3 GDP advance, 08:30 ET"},
+    {"date": "2026-10-30", "event": "Employment Cost Index Q3, 08:30 ET"},
+    {"date": "2026-11-06", "event": "Employment Situation / NFP (Oct), 08:30 ET"},
+    {"date": "2026-11-10", "event": "CPI (Oct), 08:30 ET"},
+]
+EARNINGS_SOON_DAYS = 5                  # B7: flag names reporting within 5 trading days
+PEAD_WINDOW_DAYS = 20                   # post-earnings drift decays to 0 over 20 trading days
+FAST_TRACK = {"min_sentiment": 0.7, "min_quant_10": 5.0, "max_weight": 0.10}   # C5.3 earnings fast track
+
+# Two-stage screener (IPS B9, decided Oct 20). Momentum/trend capped at 50% of the effective weight.
+SCREEN_STAGE1 = {"weights": {"mom_12_1_volscaled": 0.39, "industry_mom_1m": 0.24, "trend": 0.25, "reversal_1w": 0.12},
+                 "keep": 60}
+SCREEN_STAGE2 = {"weights": {"stage1": 0.57, "revisions_drift": 0.27, "quality": 0.16}, "keep": 30}
 
 # How the composite blends analyst scores (IPS C5.2, must sum to 1)
 SIGNAL_WEIGHTS = {"quant": 0.40, "sentiment": 0.30, "research": 0.15, "macro": 0.15}

@@ -107,6 +107,13 @@ class LLMClient:
                 status = getattr(e, "status_code", None)
                 if status == 429:
                     self.usage["rate_limited"] += 1
+                    n429 = getattr(self, "_n429", 0) + 1
+                    self._n429 = n429
+                    if (config.JUNIOR_GEMINI_FALLBACK and tier == "fast" and self.provider == "groq"
+                            and n429 >= config.JUNIOR_GEMINI_FALLBACK_AFTER_429):
+                        self._n429 = 0
+                        self.usage["gemini_fallbacks"] = self.usage.get("gemini_fallbacks", 0) + 1
+                        return LLMClient("gemini").chat_json(system, user, tier="fast", agent_name=agent_name, mock_fn=mock_fn)
                     wait = _retry_after(e) or min(60, 5 * 2 ** attempt)
                     time.sleep(wait)
                     continue

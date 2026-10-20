@@ -25,12 +25,13 @@ import data
 import finbert
 import database as db
 import forecaster
+import morning_brief
 import reflection
 import report
 from forecasters import horse_race, kronos_fc
 import screener
 from committee import (ChiefInvestmentOfficer, EquityResearchAnalyst, MacroStrategist,
-                       PortfolioManager, QuantAnalyst, ReflectionAnalyst, RiskManager, SentimentAnalyst,
+                       DevilsAdvocate, PortfolioManager, QuantAnalyst, ReflectionAnalyst, RiskManager, SentimentAnalyst,
                        Trader)
 from llm import LLMClient
 
@@ -103,7 +104,23 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
     rules = config.REGIME_RULES[regime]
 
     # ------------------------------------------------------- screening ------- #
-    scr = screener.screen(universe, market, holdings, regime)
+    def stage2_inputs(top):   # B9 Stage 2: revisions + post-earnings drift, quality (fetched for the top 60 only)
+        import numpy as _np
+        earn = data.get_earnings(top)
+        fund = data.get_fundamentals(top, sectors)
+        drift = analytics.pead(earn, close)
+        out = {}
+        for t in top:
+            e, f_ = earn.get(t) or {}, fund.get(t) or {}
+            revs = [x for x in (e.get("rev_30d_0q"), e.get("rev_30d_1y")) if x is not None]
+            q = [x for x in (f_.get("roe"), f_.get("net_margin"),
+                             -(f_["debt_to_equity"] / 100) if f_.get("debt_to_equity") is not None else None) if x is not None]
+            out[t] = {"revisions": float(_np.clip(_np.mean(revs) * 20, -1, 1)) if revs else None,   # 5% revision = 1
+                      "drift": (drift.get(t) or {}).get("drift_score"),
+                      "quality": float(_np.mean(q)) if q else None}
+        return out
+
+    scr = screener.screen(universe, market, holdings, regime, stage2_inputs=stage2_inputs)
     emit("screen", f"Funnel: {scr['funnel']}")
     bad = _preflight(close, scr["shortlist"])
     untradeable = {t: r for t, r in bad.items() if t in holdings}
@@ -137,6 +154,11 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
     names = dict(zip(universe["symbol"], universe["name"]))
     ciks = dict(zip(universe["symbol"], universe["cik"]))
     news = finbert.score_news(data.get_news(shortlist, names, ciks))
+    earn_names = sorted({t for t in shortlist + holdings if asset_types.get(t) == "stock"})
+    earnings = data.get_earnings(earn_names)
+    pead = analytics.pead(earnings, close)
+    emit("brief", "Writing the Morning Brief")
+    brief = morning_brief.build({t: news.get(t, []) for t in holdings}, earnings, holdings, llm.provider)
     tech = analytics.technicals(close, shortlist)
 
     emit("model", f"Training the LSTM on {len(shortlist)} shortlisted names")
@@ -159,6 +181,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         race = None
 
     run_id = db.start_run(llm.provider, data.DATA_SOURCE["prices"], mode)
+    db.log_message(run_id, "Morning Brief", "Morning Brief (pre-open, C0.3)", brief["model"], "brief", 0, brief)
     db.log_message(run_id, "System", "Screening funnel (IPS Part B)", "rules", "tools", 0,
                    {"universe_source": data.DATA_SOURCE["universe"], "funnel": scr["funnel"],
                     "shortlist": shortlist, "preflight_excluded": bad,
@@ -170,7 +193,10 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
     db.log_message(run_id, "System", "Quant desk — LSTM model card", fc["model"], "tools", 0,
                    {k: v for k, v in fc.items() if k not in ("forecasts", "oos_preds")})
 
-    ctx = {"tickers": shortlist, "stocks": stocks, "sectors": sectors, "asset_types": asset_types,
+    ctx = {"morning_brief": brief["text"], "earnings": earnings, "pead": pead, "names": names,
+           "earnings_soon": {t: {"date": e.get("next_date"), "time_et": e.get("next_time_et")}
+                             for t, e in earnings.items() if e.get("reports_soon") and t in shortlist + holdings},
+           "tickers": shortlist, "stocks": stocks, "sectors": sectors, "asset_types": asset_types,
            "fundamentals": fundamentals, "research_flags": flags, "news": news, "macro": macro,
            "regime_info": regime_info, "regime_rules": rules, "rule_tilts": analytics.sector_tilts(macro),
            "technicals": tech, "forecast": fc, "race": race, "current_weights": current_w, "mode": mode,
@@ -219,6 +245,9 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         comp = analytics.composite_scores(shortlist, sectors, asset_types, ctx["research"]["ratings"],
                                           ctx["quant"]["signals"], ctx["sentiment"]["sentiment"],
                                           ctx["macro_view"]["sector_tilts"], regime)
+        for t, v in pead.items():
+            if t in comp:
+                comp[t]["pead"] = v.get("drift_score")
         ctx["composite"] = comp
         ranked = sorted(comp, key=lambda t: -comp[t]["composite"])
         rank = {t: i + 1 for i, t in enumerate(ranked)}
@@ -259,6 +288,15 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
                     eligible_new.append(t)
         exit_cands = [t for t in holdings if t in comp and t not in forced and (
             (comp[t]["quant"] or 0) < -0.2 or rank[t] > 20 or comp[t]["composite_10"] <= best_unheld - 2)]
+        # C5.3 earnings fast track: reporting within 5 trading days, Sentiment >= +0.7 and Quant >= 5/10, max 10% NAV
+        F = config.FAST_TRACK
+        fast = [] if no_new_trades else [
+            t for t in unheld if asset_types.get(t) == "stock" and (earnings.get(t) or {}).get("reports_soon")
+            and (comp[t]["sentiment"] or -1) >= F["min_sentiment"] and analytics.to_10(comp[t]["quant"] or -1) >= F["min_quant_10"]
+            and not comp[t]["insufficient_data"]]
+        eligible_new += [t for t in fast if t not in eligible_new]
+        caps.update({t: F["max_weight"] for t in fast})
+        ctx["fast_track"] = fast
         ctx.update(eligible_new=eligible_new, exit_candidates=exit_cands, forced_exits=forced)
         relevant = set(holdings) | set(eligible_new) | set(exit_cands) | set(ranked[:10])
         ctx["lessons"] = reflection.lessons_for(relevant, {sectors.get(t) for t in relevant}, regime)
@@ -306,6 +344,14 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         for rnd in range(1, config.MAX_RISK_ROUNDS + 1):
             pm = call(PortfolioManager, "proposal", rnd, risk_feedback=risk_feedback, prev_proposal=prev)
             target, orders, skipped, rr, post = build(pm)
+            if rnd == 1:   # C0.1 Devil's Advocate on the PM's top 3 ideas, then the PM answers each objection
+                ideas = sorted([o for o in orders if o["side"] == "BUY"], key=lambda o: -o["notional"])[:3]
+                if ideas:
+                    da = call(DevilsAdvocate, "devils_advocate", 1, ideas=ideas, pm=pm)
+                    ctx["da_objections"] = da["objections"]
+                    ctx["prev_pm_rationale"] = pm["rationale"]
+                    pm = call(PortfolioManager, "proposal_answers_da", 1, risk_feedback=None, prev_proposal=None)
+                    target, orders, skipped, rr, post = build(pm)
             proposal = {**pm, "weights": target}
             risk = call(RiskManager, "risk_review", rnd, proposal={**proposal, "weights": post},
                         risk_report=rr, round=rnd)
@@ -540,6 +586,8 @@ def _signals_text(c: dict | None) -> str:
            f"R {f(c.get('research'))} · M {f(c.get('macro'))}")
     if c.get("na"):
         txt += f" · no signal from {', '.join(c['na'])} (weight redistributed, C5.2)"
+    if c.get("pead"):
+        txt += f" · PEAD {c['pead']:+.2f}"
     return txt
 
 

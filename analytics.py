@@ -101,6 +101,47 @@ def sector_tilts(macro: dict) -> dict[str, str]:
 
 
 # --------------------------------------------------------------------------- #
+# Post-earnings announcement drift (Stage 5, Oct 20)
+# --------------------------------------------------------------------------- #
+def pead(earnings: dict[str, dict], close: pd.DataFrame, asof=None) -> dict[str, dict]:
+    """For names that reported in the last 20 trading days: eps_surprise_pct, announcement_return (3-day return
+    around the report minus SPY), days_since_report, and drift_score = +1 if surprise AND announcement return are
+    both positive, -1 if both negative, 0 if mixed, decaying linearly to 0 over PEAD_WINDOW_DAYS. Uses only prices
+    <= asof (replay-safe)."""
+    if asof is not None:
+        close = close[close.index <= pd.Timestamp(asof)]
+    out = {}
+    if config.BENCHMARK not in close.columns or close.empty:
+        return out
+    spy = close[config.BENCHMARK]
+    for t, e in (earnings or {}).items():
+        last = (e or {}).get("last4") or []
+        if not last or t not in close.columns:
+            continue
+        rep = last[-1]
+        d = pd.Timestamp(rep["date"])
+        if d > close.index[-1]:
+            continue
+        pos = int(close.index.searchsorted(d))
+        if rep.get("time_et", "00:00") >= "16:00":                  # after the close: reaction is the next session
+            pos += 1
+        days = len(close) - 1 - pos
+        if days < 0 or days > config.PEAD_WINDOW_DAYS or pos < 1 or pos + 1 > len(close) - 1:
+            continue
+        p = close[t]
+        ann = float(p.iloc[pos + 1] / p.iloc[pos - 1] - 1) - float(spy.iloc[pos + 1] / spy.iloc[pos - 1] - 1)
+        sp = rep.get("surprise_pct")
+        sign = 0
+        if sp is not None and sp > 0 and ann > 0:
+            sign = 1
+        elif sp is not None and sp < 0 and ann < 0:
+            sign = -1
+        out[t] = {"eps_surprise_pct": sp, "announcement_return": round(ann, 4), "days_since_report": int(days),
+                  "drift_score": round(sign * (1 - days / config.PEAD_WINDOW_DAYS), 3)}
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Covariance with shrinkage (no sklearn needed)
 # --------------------------------------------------------------------------- #
 def shrunk_cov(returns: pd.DataFrame, shrink: float = 0.3) -> pd.DataFrame:
@@ -305,7 +346,7 @@ def _solve(tickers, convictions, prices, sectors, kind, equity_exposure, lev_cap
     for t in tickers:
         k = kind(t)
         cap = (caps or {}).get(t, 1.0)                     # vol-targeted ETF cap (never above IPS)
-        ub.append(buf * (L["max_single_weight"] if k == "stock" else
+        ub.append(buf * (min(L["max_single_weight"], cap) if k == "stock" else
                          min(L["max_leveraged_each"], lev_cap, cap) if k == "leveraged_etf" else min(inv_hi, cap)))
     ub = np.array(ub)
     bounds = [(min(lb, 0.5 * b), b) for b in ub]   # lb: every selected name must clear the minimum trade size

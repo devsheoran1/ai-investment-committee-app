@@ -28,7 +28,11 @@ failed before, but don't over-fit to a handful of calls.
 THESIS DISCIPLINE: for every name you want to ADD or EXIT, give a one-line thesis, what would prove it wrong
 (invalidation) and a price level for it (below entry for a long). "invalidated_holdings" are positions whose
 invalidation price has already been hit: you MUST answer each one in invalidation_responses, starting
-with "exit" or "hold" plus the reason; an unanswered one is treated as an exit candidate."""
+with "exit" or "hold" plus the reason; an unanswered one is treated as an exit candidate.
+DEVIL'S ADVOCATE (C0.1): if the brief contains "devils_advocate", answer EVERY objection in da_responses (proceed,
+downsize or drop + why) and adjust convictions accordingly. You decide; the CIO reads both.
+EARNINGS: "earnings_soon" lists names reporting within 5 trading days (binary risk, or the C5.3 fast track:
+Sentiment >= +0.7 and Quant >= 5/10, max 10% NAV). "pead" is post-earnings drift (+ = beat confirmed by the market)."""
     output_schema = """{
   "convictions": {"<TICKER>": number -1..1},
   "equity_exposure": number between 0.97 and 1.00,
@@ -37,7 +41,8 @@ with "exit" or "hold" plus the reason; an unanswered one is treated as an exit c
   "trade_notes": {"<TICKER you add or exit>": {"thesis": "max 25 words", "invalidation": "max 20 words", "invalidation_px": number}},
   "invalidation_responses": {"<TICKER in invalidated_holdings>": "exit|hold: reason, max 25 words"}
 }
-(trade_notes and invalidation_responses are optional fields)"""
+(trade_notes and invalidation_responses are optional fields; da_responses is required when "devils_advocate" is in the brief:
+  "da_responses": {"<TICKER>": "proceed|downsize|drop: answer to the objection, max 30 words"})"""
 
     def build_prompt(self, ctx):
         comp = {t: {k: c[k] for k in ("type", "composite_10", "quant", "sentiment", "research")}
@@ -60,6 +65,15 @@ with "exit" or "hold" plus the reason; an unanswered one is treated as an exit c
             brief["committee_track_record"] = ctx["track_record"]
         if ctx.get("invalidated"):
             brief["invalidated_holdings"] = ctx["invalidated"]
+        if ctx.get("earnings_soon"):
+            brief["earnings_soon"] = ctx["earnings_soon"]
+        if ctx.get("pead"):
+            brief["pead"] = {t: v["drift_score"] for t, v in ctx["pead"].items() if v.get("drift_score")}
+        if ctx.get("fast_track"):
+            brief["earnings_fast_track_eligible"] = ctx["fast_track"]
+        if ctx.get("da_objections"):
+            brief["devils_advocate"] = ctx["da_objections"]
+            brief["your_previous_proposal"] = ctx.get("prev_pm_rationale", "")
         txt = f"COMMITTEE BRIEF:\n{compact(brief)}"
         if ctx.get("risk_feedback"):
             txt += (f"\n\nYOUR PREVIOUS PROPOSAL:\n{compact(ctx['prev_proposal'])}"
@@ -78,9 +92,15 @@ with "exit" or "hold" plus the reason; an unanswered one is treated as an exit c
                     for i in ctx.get("invalidated", [])}
         notes = {t: {"thesis": f"[mock] composite {ctx['composite'][t]['composite_10']}/10, momentum-led",
                      "invalidation": "[mock] closes 5% below entry", "invalidation_px": None} for t in top}
+        da = {t: (f"{o['verdict']}: [mock] noted ({o['evidence']})") for t, o in (ctx.get("da_objections") or {}).items()}
+        for t, o in (ctx.get("da_objections") or {}).items():
+            if o["verdict"] == "downsize" and t in conv:
+                conv[t] = round(conv[t] * 0.6, 2)
+            elif o["verdict"] == "drop" and t in conv:
+                conv[t] = 0.0
         return {"convictions": conv, "equity_exposure": ctx["macro_view"]["equity_exposure_target"],
                 "rationale": f"[mock] Follow composite; largest convictions {top}.", "response_to_risk": resp,
-                "trade_notes": notes, "invalidation_responses": resp_inv}
+                "trade_notes": notes, "invalidation_responses": resp_inv, "da_responses": da}
 
     def validate(self, out, ctx):
         src = out.get("convictions") or {}
@@ -114,4 +134,6 @@ with "exit" or "hold" plus the reason; an unanswered one is treated as an exit c
                                               ctx["macro_view"]["equity_exposure_target"]), 3),
                 "rationale": str(out.get("rationale", ""))[:700],
                 "response_to_risk": str(out.get("response_to_risk", ""))[:400],
-                "trade_notes": notes, "invalidation_responses": responses}
+                "trade_notes": notes, "invalidation_responses": responses,
+                "da_responses": {t: str((out.get("da_responses") or {}).get(t) or "NOT ANSWERED by the PM")[:240]
+                                 for t in (ctx.get("da_objections") or {})}}

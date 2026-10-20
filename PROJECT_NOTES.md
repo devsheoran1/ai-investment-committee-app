@@ -123,6 +123,34 @@ live init is Oct 22 14:30 Madrid). 7 runs, 20 trades (17 buys / 3 sells). What b
   archived dry run: 0 timestamps changed, 5 stale executions flagged.
 - Tests: `tests/test_reasons.py`.
 
+## Stage 5 (Oct 20): daily market awareness (C0.1, C0.3, B7, C1.2, C2.8, B9)
+- **Gemini key works** (tested Oct 20): `gemini-3.5-flash` answers in ~2 s. The 2.5 models in our config were retired for
+  new keys, so `config.PROVIDERS["gemini"]` now uses `gemini-3.5-flash` / `gemini-3.5-flash-lite`.
+- **Morning Brief** (`morning_brief.py`): one Gemini Flash call pre-open (fallback gpt-oss-120b on Groq, then a template:
+  never blocks a run). Inputs: ES/NQ/YM futures, Euro Stoxx/DAX/FTSE/Nikkei/Hang Seng, VIX, 10y, DXY, WTI, sector ETFs,
+  ~40 market headlines + held-name headlines, earnings due, macro calendar. Output: 2 paragraphs + tickers in play.
+  Prepended (≤ 900 chars) to every agent's prompt via `Agent.run`, and logged as stage `brief`.
+  *Doc vs spec:* IPS C0.3 says "gpt-oss-20b, one paragraph"; the Oct 20 spec says Gemini Flash, two paragraphs. We follow
+  the spec (newer); flagged here. `config.JUNIOR_GEMINI_FALLBACK` (off by default) lets a junior agent that hits 3+ Groq 429s
+  retry on Gemini.
+- **Earnings (B7)**: `data.get_earnings` (yfinance): next date/time, trading days to report, `reports_soon` (≤ 5 days), last 4
+  quarters' EPS est/actual/surprise, 30-day EPS-estimate revisions (0q, +1y), recommendation trend. Feeds Research (C2.8
+  earnings preview line), Sentiment, PM (`earnings_soon`) and the **C5.3 fast track** (reporting soon, Sentiment ≥ +0.7,
+  Quant ≥ 5/10 → eligible, capped at 10% NAV in the optimiser).
+- **PEAD** (`analytics.pead`): surprise %, 3-day announcement return minus SPY, days since report; drift = +1 / −1 when both
+  agree, 0 if mixed, decaying linearly over 20 trading days; replay-safe. Fed to the screener (Stage 2), Quant (input column
+  `pead_drift`, role_prompt untouched), the PM and the trade `signals`.
+- **Macro calendar (C1.2)** in `config.MACRO_CALENDAR`: FOMC Oct 27–28 (decision Oct 28 14:00 ET), PCE + Q3 GDP Oct 29,
+  ECI Oct 30, NFP Nov 6, CPI Nov 10 (sources: Fed via fedratecalc, BEA, BLS schedule pages).
+- **Devil's Advocate (C0.1)**: after the PM's first proposal, one gpt-oss-120b call on the top 3 BUYs (bear case, evidence,
+  proceed/downsize/drop); the PM then answers each objection in `da_responses` (unanswered = "NOT ANSWERED"), and the CIO
+  sees both. Advisory, no veto. In the roster and transcript.
+- **Regime rules (C1.3)**: verified exactly (2-of-4 risk-off, all-3 risk-on, downgrade immediate, upgrade after 2 days); test added.
+- **Two-stage screener (B9)**: see C8. Quality uses ROE, net margin and D/E (vs sector via the sector-neutral z-score);
+  "margin trend YoY" would need quarterly statements for 60 names per run, so it's left out of the screen (Research still flags it).
+- Cost: + ~2 LLM calls per run (DA + PM answer) + 1 Gemini call; first run of the day ~65 s in mock (earnings/fundamentals for 60 names).
+- Tests: `tests/test_market_awareness.py`.
+
 ## Conflicts and how we resolved them
 
 | # | Conflict | Resolution |
@@ -134,7 +162,7 @@ live init is Oct 22 14:30 Madrid). 7 runs, 20 trades (17 buys / 3 sells). What b
 | C5 | Brief CSV format has no ticker column | Added `ticker` and `reason`: positions can't be tracked without them |
 | C6 | Brief "Win Rate" undefined | % of up days. Switch to % of profitable round-trips once there are enough closed trades |
 | C7 | IPS A12 cash ≤ 5% vs A16 ±5% drift band | When exits leave cash > 5%, top-ups inside the drift band are allowed |
-| C8 | IPS B9 left blank; default is 40% quality/value/low-vol, against A14 (momentum) | Funnel is price-only and momentum-led: 12-1m 35%, 3m 25%, trend 25%, low vol 15%. Quality comes in at Research |
+| C8 | IPS B9 weights vs A14 momentum focus | ✅ Decided Oct 20 (option B, momentum/trend capped at 50%): two-stage screener. Stage 1 (all ~500, price only, sector-neutral): 12-1m vol-scaled momentum 39 · industry momentum 24 · trend 25 · 1-week reversal 12 → top 60. Stage 2: Stage-1 score 57 · revisions + post-earnings drift 27 · quality 16 → top 30. Effective 22/14/14/27/16/7, value 0, low-vol replaced by vol-scaling. Missing Stage-2 input reweights pro rata. `config.SCREEN_STAGE1/2`. |
 | C9 | IPS C1.5 macro tilt +0.5 *and* 15% macro weight would count macro twice | Tilt goes through the 15% weight, sized so it equals ±0.5 on the 0–10 composite |
 | C10 | IPS A6 beta "any" vs C1.4 beta bands per regime | Bands are soft concerns for Risk, not hard limits |
 | C11 | IPS A4 −10% drawdown, no de-risking action given | ✅ Signed off Oct 20 (graduated): at −7% from peak NAV the leveraged sleeve is capped at 10% and no new leveraged buys; at −10% all leveraged longs are exited and, in risk-off, the inverse hedge is ≥ 15%. Restrictions lift after 2 consecutive days back above −7%. `config.DD_*`, `analytics.drawdown_state`, enforced as a hard limit by the Risk Manager. |
@@ -165,6 +193,11 @@ Not yet built:
 
 ## Agent output formats (contracts between teammates)
 
+- **Stage 5 (Oct 20):** new agent **Devil's Advocate** (in ROSTER; owner TBD): input `ideas` (top 3 BUY orders), output
+  `{objections: {ticker: {bear_case, evidence, verdict}}}`. **PM** gains `da_responses` (required when objections exist) and
+  sees `earnings_soon`, `pead`, `earnings_fast_track_eligible`. **Research** gains optional `ratings[t].earnings_preview`
+  (C2.8). **Quant** input table gains a `pead_drift` column (output unchanged). Every agent's prompt starts with the
+  MORNING BRIEF. Composite rows gain `pead`.
 - **Orders / trades (Oct 20):** each order carries `facts`, `why`, `name`, `signals_text`; `reason` is plain English.
   New agent `Trade Rationale Writer` (not in ROSTER): input `facts[]`, output `{rationales: {ticker: text}, fallback_used_for}`.
 - **Sentiment output (Oct 20, owner Mer):** `sentiment[t].score` may be **null** (no news / no answer = n/a). New keys

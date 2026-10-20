@@ -27,7 +27,9 @@ Score -1..+1 (0 = no edge). Use the range: the PM needs to see who is strongest.
         race = ctx.get("race")
         has_k = bool(race) and any((race["live"].get(t) or {}).get("kronos_ret") is not None for t in ctx["tickers"])
         tech_keys = list(next(iter(ctx["technicals"].values())).keys())
-        cols = tech_keys + ["pred_5d_return_pct"] + (["kronos_ret", "kronos_p_up", "agree"] if has_k else [])
+        pead = ctx.get("pead") or {}
+        cols = tech_keys + ["pred_5d_return_pct"] + (["kronos_ret", "kronos_p_up", "agree"] if has_k else []) + \
+            (["pead_drift"] if pead else [])
         rows = {}
         for t in ctx["tickers"]:
             vals = [ctx["technicals"][t][k] for k in tech_keys] + [fc["forecasts"][t]["pred_5d_return_pct"]]
@@ -35,11 +37,13 @@ Score -1..+1 (0 = no edge). Use the range: the PM needs to see who is strongest.
                 lv = race["live"].get(t) or {}
                 vals += [lv.get("kronos_ret"), lv.get("kronos_p_up"),
                          None if lv.get("agree") is None else ("yes" if lv["agree"] else "no")]
+            if pead:
+                vals.append((pead.get(t) or {}).get("drift_score"))
             rows[t] = vals
         txt = (f"LSTM MODEL CARD (out-of-sample):\n{compact(model_card)}\n\n"
                f"PER-STOCK SIGNALS: each ticker maps to a list in this column order {compact(cols)} "
                f"(pred_5d_return_pct = LSTM forecast; kronos_ret = Kronos-mini 5d forecast in %, kronos_p_up = share "
-               f"of its sampled paths ending up; null = not available):\n{compact(rows)}")
+               f"of its sampled paths ending up; pead_drift = post-earnings drift score -1..+1, decaying over 20 days; null = not available):\n{compact(rows)}")
         if race:
             txt += (f"\n\nMODEL SCOREBOARD (same out-of-sample origins; weight a model only as far as its IC "
                     f"justifies, a model with IC <= 0 gets no weight):\n{race['scoreboard_line']}")

@@ -18,11 +18,14 @@ P/B are secondary context. Compare with sector peers within the shortlist.
 The "flags" are computed for you (negative FCF, D/E above sector median, negative
 margin): incorporate them, don't re-derive them. Every figure you cite must be one
 you were given. Names marked insufficient_data get no score.
-Score -1 (high risk) to +1 (high quality). Use the full range."""
+Score -1 (high risk) to +1 (high quality). Use the full range.
+EARNINGS PREVIEW (C2.8): for names reporting within 5 trading days you get the last 4 quarters' EPS surprises, the
+current estimate and the recommendation trend; add one line on whether the setup favours a beat given expectations."""
     output_schema = """{
   "ratings": {
     "<TICKER>": {"rating": "buy"|"hold"|"sell", "score": number -1..1,
-                 "thesis": "max 25 words citing given figures"}
+                 "thesis": "max 25 words citing given figures",
+                 "earnings_preview": "only for names reporting soon: max 25 words, else omit"}
   },
   "top_pick": "<TICKER>",
   "least_preferred": "<TICKER>"
@@ -34,9 +37,12 @@ Score -1 (high risk) to +1 (high quality). Use the full range."""
         flags = {t: ctx["research_flags"].get(t, []) for t in f if ctx["research_flags"].get(t)}
         note = " (NOTE: fundamentals are synthetic demo data)" if any(
             d.get("synthetic") for d in ctx["fundamentals"].values()) else ""
+        earn = {t: {k: e.get(k) for k in ("next_date", "last4", "current_estimate", "rec_trend")}
+                for t, e in (ctx.get("earnings") or {}).items() if t in f and e.get("reports_soon")}
         return (f"FUNDAMENTALS{note}. Units: ratios as decimals (0.25 = 25%), "
                 f"mkt_cap/fcf in $bn, debt_to_equity in %.\n{compact(f)}\n\nFLAGS:\n{compact(flags)}\n\n"
-                f"Rate every ticker: {list(f)}")
+                + (f"EARNINGS PREVIEW INPUTS (reporting within 5 trading days):\n{compact(earn)}\n\n" if earn else "")
+                + f"Rate every ticker: {list(f)}")
 
     def mock(self, ctx):
         f = {t: d for t, d in ctx["fundamentals"].items() if not d.get("insufficient_data")}
@@ -73,5 +79,7 @@ Score -1 (high risk) to +1 (high quality). Use the full range."""
             ratings[t] = {"rating": rating if rating in RATINGS[:3] else "hold", "score": round(clip(r.get("score")), 2),
                           "thesis": str(r.get("thesis", "no view"))[:200],
                           "flags": ctx["research_flags"].get(t, [])}
+            if r.get("earnings_preview") and ((ctx.get("earnings") or {}).get(t) or {}).get("reports_soon"):
+                ratings[t]["earnings_preview"] = str(r["earnings_preview"])[:200]
         return {"ratings": ratings, "top_pick": out.get("top_pick"),
                 "least_preferred": out.get("least_preferred")}

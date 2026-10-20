@@ -44,6 +44,8 @@ and record any concern as dissent. "lessons" are the committee's graded past cal
                        for o in ctx.get("orders", [])],
             "mode": ctx.get("mode"),
             "lessons": ctx.get("lessons") or None,
+            "devils_advocate": ctx.get("da_objections") or None,
+            "pm_answers_to_devils_advocate": (ctx.get("proposal") or {}).get("da_responses") or None,
             "committee_track_record": ctx.get("track_record") if ctx.get("track_record", {}).get("calls") else None,
             "invalidated_holdings": [i["ticker"] for i in ctx.get("invalidated", [])] or None,
         }

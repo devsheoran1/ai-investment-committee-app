@@ -531,6 +531,72 @@ def get_news(tickers: list[str], names: dict | None = None, ciks: dict | None = 
 
 
 # --------------------------------------------------------------------------- #
+# earnings (IPS B7 / C2.8): dates, EPS estimate/actual/surprise, revisions, recommendation trend
+# --------------------------------------------------------------------------- #
+def _fetch_earnings(ticker: str) -> dict:
+    import yfinance as yf
+    tk = yf.Ticker(ticker)
+    out: dict = {}
+    try:
+        ed = tk.earnings_dates
+        if ed is not None and len(ed):
+            ed = ed.sort_index()
+            now = pd.Timestamp.now(tz=ed.index.tz)
+            past = ed[ed.index <= now].dropna(subset=["Reported EPS"]).tail(4)
+            fut = ed[ed.index > now]
+            out["last4"] = [{"date": str(i.date()), "est": None if pd.isna(r["EPS Estimate"]) else round(float(r["EPS Estimate"]), 3),
+                             "actual": None if pd.isna(r["Reported EPS"]) else round(float(r["Reported EPS"]), 3),
+                             "surprise_pct": None if pd.isna(r["Surprise(%)"]) else round(float(r["Surprise(%)"]), 2),
+                             "time_et": i.strftime("%H:%M")} for i, r in past.iterrows()]
+            if len(fut):
+                out["next_date"] = str(fut.index[0].date())
+                out["next_time_et"] = fut.index[0].strftime("%H:%M")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        et = tk.eps_trend
+        if et is not None and len(et):
+            def chg(period):
+                if period in et.index and et.loc[period, "30daysAgo"]:
+                    return round(float(et.loc[period, "current"] / et.loc[period, "30daysAgo"] - 1), 4)
+                return None
+            out["rev_30d_0q"], out["rev_30d_1y"] = chg("0q"), chg("+1y")
+            out["current_estimate"] = round(float(et.loc["0q", "current"]), 3) if "0q" in et.index else None
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        rc = tk.recommendations
+        if rc is not None and len(rc):
+            out["rec_trend"] = {r["period"]: {k: int(r[k]) for k in ("strongBuy", "buy", "hold", "sell", "strongSell")}
+                                for _, r in rc.head(2).iterrows()}
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def get_earnings(tickers: list[str]) -> dict[str, dict]:
+    """Per stock: next report date (+ trading days to it, reports_soon flag), last 4 quarters' EPS est/actual/surprise,
+    30-day EPS-estimate revisions (current quarter, next year), recommendation trend. Cached daily."""
+    if is_synthetic() or not tickers:
+        return {t: {} for t in tickers}
+
+    def fetch_all():
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            return dict(zip(tickers, ex.map(_fetch_earnings, tickers)))
+    raw = _cached(_key("earnings", tickers), fetch_all, keep_if=lambda v: sum(bool(x) for x in v.values()) >= 0.3 * max(1, len(v)))
+    today = pd.Timestamp.today().normalize()
+    out = {}
+    for t in tickers:
+        d = dict(raw.get(t) or {})
+        if d.get("next_date"):
+            n = len(pd.bdate_range(today, pd.Timestamp(d["next_date"]))) - 1
+            d["trading_days_to_report"] = n
+            d["reports_soon"] = 0 <= n <= config.EARNINGS_SOON_DAYS
+        out[t] = d
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # macro (IPS C1.2)
 # --------------------------------------------------------------------------- #
 MACRO_SYMBOLS = ["^VIX", "^TNX", "^IRX", "HYG", "LQD", "DX-Y.NYB", "CL=F"]

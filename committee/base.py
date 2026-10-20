@@ -66,8 +66,12 @@ class Agent:
         return out
 
     # --- shared ------------------------------------------------------------- #
+    use_brief: bool = True          # the Morning Brief (C0.3) is prepended to every agent's prompt
+
     def run(self, ctx: dict, llm) -> tuple[dict, str]:
         prompt = self.build_prompt(ctx)
+        if self.use_brief and ctx.get("morning_brief"):
+            prompt = f"MORNING BRIEF (today, pre-open):\n{ctx['morning_brief'][:900]}\n\n{prompt}"
         raw, model = llm.chat_json(self.system_prompt, prompt, tier=self.tier,
                                    agent_name=self.name, mock_fn=lambda: self.mock(ctx))
         return self.validate(raw if isinstance(raw, dict) else {}, ctx), model
