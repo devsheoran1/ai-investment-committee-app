@@ -3,8 +3,8 @@ Risk Manager (IPS C6). Prof. Manero's rule 3 (Oct 20): leverage and inverse hedg
 THIS agent enforces the limits. So the hard-limit verdict lives here (check_book / classify), is applied to the
 post-trade book, and is what the transcript and report show as the Risk Manager's verdict.
 
-    hard (always reject, Python)  holdings < 10, cash > 3%, name > 20%, sector > 35%, leveraged > 30% total or 15% each,
-                                  inverse > 25% or outside risk-off, vol > 25%, VaR > 5%, the C11 drawdown rule
+    hard (always reject, Python)  holdings < 10, cash > 5%, name > 20%, sector > 35%, leveraged > 30% total or 15% each,
+                                  inverse > 25% or outside risk-off, vol > 35%, VaR > 5%, the C11 drawdown rule
     soft (may reject, IPS C6.3)   effective positions < 4, corr > 0.9 among the top 3, position > 25% of 20d ADV
     warnings (never reject)       everything else: beta band, concentration, correlation, vol-target caps ...
 """
@@ -77,6 +77,11 @@ def classify(rr: dict) -> dict:
             c11_ok, c11_msg = False, f"C11 {lvl}: no new leveraged buys allowed ({', '.join(added)})"
         if lvl == "hard" and rr["regime"] == "risk_off" and inv_total + EPS < (dd.get("inverse_min_risk_off") or 0):
             c11_ok, c11_msg = False, f"C11 hard: inverse hedge {inv_total:.1%} < {dd['inverse_min_risk_off']:.0%} in risk-off"
+    sig = dd.get("risk_off_signal_block")
+    if sig and c11_ok:                  # Oct 21: any one risk-off signal = no new leveraged buys
+        added = [t for t, x in lev_each.items() if x > rr.get("current_weights", {}).get(t, 0.0) + 0.005]
+        if added:
+            c11_ok, c11_msg = False, f"risk-off signal ({', '.join(sig)}): no new leveraged buys ({', '.join(added)})"
     add("Drawdown rule (A4/C11)", dd.get("drawdown", 0.0), f"level {lvl}", c11_ok, "hard", c11_msg)
     # soft rejects (IPS C6.3)
     eff = rr.get("effective_n_positions", 0.0)
@@ -114,7 +119,7 @@ def fix_hints(rr: dict) -> list[str]:
         if "holdings" in b:
             hints.append("add names (or pair every exit with a buy) to keep >= 10 holdings")
         elif "cash" in b and ">" in b:
-            hints.append("upsize today's buys so cash <= 3%")
+            hints.append("upsize today's buys so cash <= 5%")
         elif "sector" in b:
             hints.append("trim the named sector below 35% and redistribute")
         elif "leveraged" in b or "C11" in b:

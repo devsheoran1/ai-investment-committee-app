@@ -158,7 +158,7 @@ mdd = float((eq / eq.cummax().clip(lower=config.STARTING_CAPITAL) - 1).min()) if
 cash_pct = cash / nav if nav else 1.0
 k = st.columns(4) + st.columns(4)
 ui.kpi(k[0], "Portfolio value", f"${nav:,.0f}", f"{nav - config.STARTING_CAPITAL:+,.0f} since inception", ui.tone(nav - config.STARTING_CAPITAL))
-ui.kpi(k[1], "Cash available", f"${cash:,.0f}", f"{cash_pct:.1%} of NAV · limit 3%",
+ui.kpi(k[1], "Cash available", f"${cash:,.0f}", f"{cash_pct:.1%} of NAV · limit {config.RISK_LIMITS['max_cash_weight']:.0%}",
        "neg" if positions and cash_pct > config.RISK_LIMITS["max_cash_weight"] else "")
 alpha = None if spy_ret is None else (ret - spy_ret) * 1e4
 ui.kpi(k[2], "Return vs SPY", f"{ret:+.2%}", f"SPY {spy_ret:+.2%} · alpha {alpha:+.0f} bps" if alpha is not None else "no snapshot yet", ui.tone(ret))

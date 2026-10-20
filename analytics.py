@@ -82,7 +82,9 @@ def macro_regime(macro: dict) -> dict:
         raw = "risk_on"
     else:
         raw = "neutral"
-    return {"raw_regime": raw, "risk_off_signals": off, "risk_on_signals": on}
+    # Oct 21: a single risk-off signal already blocks new leveraged buys; 2 of 4 = full risk-off
+    lev_block = [k for k, v in off.items() if v]
+    return {"raw_regime": raw, "risk_off_signals": off, "risk_on_signals": on, "lev_buy_block": lev_block}
 
 
 def apply_hysteresis(raw: str, prev_effective: str | None, prev_raw: str | None) -> tuple[str, str]:
@@ -462,14 +464,15 @@ def plan_orders(target_w: dict[str, float], positions: dict[str, dict], px: dict
                 nav: float, cash: float, forced_exits: dict[str, str], init_mode: bool,
                 composite: dict[str, dict], untradeable: dict[str, str], sectors: dict | None = None,
                 asset_types: dict | None = None, caps: dict | None = None, lev_cap: float | None = None,
-                no_new_leveraged: bool = False) -> tuple[list[dict], list[dict]]:
+                no_new_leveraged: bool = False,
+                no_new_leveraged_reason: str = "C11 drawdown rule: no new leveraged buys") -> tuple[list[dict], list[dict]]:
     """Target book -> the orders that will actually execute (<= 5/day after init). Returns (orders, skipped).
 
     Order of business (IPS C5.5): forced exits; replacement buys if the book is below the 12-name target
     (A7); then score gain x weight moved. Then, on the EXECUTABLE book:
       - holdings floor (A7): a discretionary exit that would leave < 10 names must be paired with a new-name
         buy the same day, or it is dropped. Forced exits (stop-loss, news veto, C11) always go through.
-      - cash <= 3% (A12): if the cap leaves too much cash, the BUYs already in the plan are upsized
+      - cash <= 5% (A12): if the cap leaves too much cash, the BUYs already in the plan are upsized
         (20% name / 35% sector / ETF caps), then held names topped up if a slot is free; otherwise flagged.
     Sells always precede buys."""
     L = config.RISK_LIMITS
@@ -506,7 +509,7 @@ def plan_orders(target_w: dict[str, float], positions: dict[str, dict], px: dict
                 continue
         side = "BUY" if diff_val > 0 else "SELL"
         if side == "BUY" and no_new_leveraged and asset_types.get(t) == "leveraged_etf":
-            skipped.append({"ticker": t, "reason": "C11 drawdown rule: no new leveraged buys"})
+            skipped.append({"ticker": t, "reason": no_new_leveraged_reason})
             continue
         shares = int(math.floor(abs(diff_val) / price))
         if side == "SELL":
@@ -563,7 +566,7 @@ def plan_orders(target_w: dict[str, float], positions: dict[str, dict], px: dict
         avail -= o["notional"]
         final_buys.append(o)
 
-    # A12 cash <= 3% on the executable book: upsize the planned BUYs, then top up held names if a slot is free
+    # A12 cash <= 5% on the executable book: upsize the planned BUYs, then top up held names if a slot is free
     if avail / nav > L["max_cash_weight"]:
         post_val = _post_values(positions, sells + final_buys, px)
         excess = avail - config.TARGET_CASH * nav
@@ -649,7 +652,7 @@ def _post_count(positions: dict, orders: list[dict]) -> int:
 def shrink_to_limits(target: dict[str, float], rr: dict, sectors: dict, asset_types: dict,
                      caps: dict | None = None, lev_cap: float | None = None) -> dict[str, float]:
     """Mechanical de-risk after the last Risk round (IPS C6.5): shrink the offending positions pro rata and
-    hand the freed weight to the compliant stocks with room. Keeps total exposure (cash <= 3%)."""
+    hand the freed weight to the compliant stocks with room. Keeps total exposure (cash <= 5%)."""
     L = config.RISK_LIMITS
     w = dict(target)
     caps = caps or {}

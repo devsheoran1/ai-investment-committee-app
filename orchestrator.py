@@ -151,6 +151,11 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
     cash = db.get_cash()
     snaps = db.get_snapshots()
     dd_state = analytics.drawdown_state(snaps[snaps["date"] < db.today()]["total_equity"].tolist() if len(snaps) else [], nav)
+    lev_reason = "C11 drawdown rule: no new leveraged buys"
+    if reg.get("lev_buy_block"):        # Oct 21: any one risk-off signal blocks new leveraged buys
+        dd_state = {**dd_state, "no_new_leveraged": True, "risk_off_signal_block": reg["lev_buy_block"]}
+        if dd_state.get("level") not in ("warn", "hard"):
+            lev_reason = "risk-off signal (" + ", ".join(reg["lev_buy_block"]) + "): no new leveraged buys"
     drawdown = dd_state["drawdown"]
     caps = analytics.etf_caps(close, set(shortlist) | set(holdings), asset_types)
     adv = analytics.adv20(market, set(shortlist) | set(holdings))
@@ -364,7 +369,8 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
             orders, skipped = analytics.plan_orders(target, positions, last_px, nav, cash, forced,
                                                     init_mode, comp, untradeable, sectors=sectors,
                                                     asset_types=asset_types, caps=caps, lev_cap=lev_eff,
-                                                    no_new_leveraged=dd_state["no_new_leveraged"])
+                                                    no_new_leveraged=dd_state["no_new_leveraged"],
+                                                    no_new_leveraged_reason=lev_reason)
             post = _post_trade_weights(positions, cash, orders, last_px)
             # Prof. Manero rule 3: the Risk Manager checks the book that will ACTUALLY exist after the
             # 5-trade cap, the $25k minimum and the cash upsizing. A breach here = re-plan, never execute.

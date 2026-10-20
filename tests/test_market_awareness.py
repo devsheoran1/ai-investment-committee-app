@@ -89,6 +89,22 @@ def test_fast_track_cap_applies_to_stocks_in_optimiser():
     assert w["S0"] <= 0.10 + 1e-6, w["S0"]
 
 
+
+
+def test_one_risk_off_signal_blocks_leveraged_buys():   # Oct 21
+    import analytics, config
+    base = {"vix_level": 18, "spy_vs_50dma_pct": 1.0, "spy_vs_200dma_pct": 2.0, "hyg_lqd_vs_20dma_pct": 0.5, "vix_1d_change_pct": 0}
+    assert analytics.macro_regime(base)["lev_buy_block"] == []
+    one = {**base, "vix_level": 26}
+    r = analytics.macro_regime(one)
+    assert r["raw_regime"] != "risk_off" and r["lev_buy_block"] == ["VIX > 25"]
+    orders, skipped = analytics.plan_orders({"TQQQ": 0.10}, {}, {"TQQQ": 50.0}, 1_000_000.0, 1_000_000.0, {}, False,
+                                            {}, {}, asset_types={"TQQQ": "leveraged_etf"}, no_new_leveraged=True, no_new_leveraged_reason="risk-off signal (VIX > 25): no new leveraged buys")
+    assert not [o for o in orders if o["ticker"] == "TQQQ"] and any("risk-off signal" in x["reason"] for x in skipped)
+    assert not [o for o in orders if o["ticker"] == "TQQQ"]
+    assert config.RISK_LIMITS["max_portfolio_vol"] == 0.35 and config.RISK_LIMITS["max_cash_weight"] == 0.05
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -126,8 +126,8 @@ RISK_LIMITS = {
     "max_single_weight": 0.20,          # IPS A8 (Brief mega-prompt says 40%; ours is stricter)
     "max_sector_weight": 0.35,          # IPS A9
     "min_cash_weight": 0.0,             # Brief §8.2 constraint 1: cash >= 0
-    "max_cash_weight": 0.03,            # IPS A12 (Oct 20): "not more than 3%", checked on the post-trade book
-    "max_portfolio_vol": 0.25,          # IPS A3 default
+    "max_cash_weight": 0.05,            # IPS A12 (Oct 21): cash 0-5%, i.e. >= 95% invested, post-trade book
+    "max_portfolio_vol": 0.35,          # IPS A3 (Oct 21: raised from 25%)
     "max_var_95_1d": 0.05,              # IPS A5
     "max_beta": None,                   # IPS A6: "any" (regime bands in C1.4 are soft checks)
     "max_leveraged_total": 0.30,        # IPS A10
@@ -160,14 +160,15 @@ MAX_RUNS_PER_DAY = 3                    # Brief §10.2
 MIN_HOLDINGS, MAX_HOLDINGS = 10, 20     # Brief §1: "10 or 20"; 10 is a hard floor every day (IPS A7)
 TARGET_HOLDINGS = (12, 15)              # IPS A7 (Oct 20): buffer so one exit never breaches the floor
 TARGET_HOLDINGS_INIT = 14
-TARGET_CASH = 0.01                      # where upsizing aims when cash would exceed the 3% cap
+TARGET_CASH = 0.01                      # where upsizing aims when cash would exceed the 5% cap
 MAX_DAILY_TURNOVER = 0.25               # IPS A18, one-way (buys + sells) / 2 / NAV
 MIN_TRADE_NOTIONAL = 25_000             # IPS C8.4
 TRANSACTION_COST_BPS = 0                # IPS A20: nil unless the professor sets one
 NAV_JUMP_HALT = 0.20                    # IPS C8.6: >20% NAV move vs last snapshot = data error
 PRICE_JUMP_EXCLUDE = 0.20               # IPS D10: per-ticker pre-flight check
 
-# Exposure per regime (IPS C1.4). Always >= 97% invested (A12: cash <= 3%).
+# Exposure per regime (IPS C1.4). Always >= 95% invested (A12: cash <= 5%).
+# Any ONE risk-off signal blocks new leveraged buys (Oct 21); 2 of 4 = full risk-off (analytics.macro_regime).
 REGIME_RULES = {
     "risk_on":  {"equity_exposure": 0.98, "max_leveraged": 0.30, "inverse": (0.0, 0.0),  "beta": (1.2, 1.6)},
     "neutral":  {"equity_exposure": 0.98, "max_leveraged": 0.10, "inverse": (0.0, 0.0),  "beta": (0.9, 1.2)},

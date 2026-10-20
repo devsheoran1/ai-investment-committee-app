@@ -10,7 +10,7 @@ class PortfolioManager(Agent):
     role_prompt = """You turn the analysts' views into a target portfolio. You do NOT set weights:
 you set a CONVICTION per name (-1 = exit/avoid, 0 = no view, +1 = maximum overweight)
 and the fund's optimiser converts them into weights under the IPS limits (20% max per
-stock, 35% per sector, leveraged ETFs capped by regime and by their vol-targeted caps, >= 97% invested, 10-20 names).
+stock, 35% per sector, leveraged ETFs capped by regime and by their vol-targeted caps, >= 95% invested, 10-20 names).
 The composite (0-10 scale) blends Quant 40%, Sentiment 30%, Research 15%, Macro 15%.
 Entry rule for a NEW name on a daily run (IPS C5.3): composite >= 7/10, Quant >= 6/10,
 in the shortlist's top 10 and >= 1 point above the weakest holding; the brief's
@@ -35,7 +35,7 @@ EARNINGS: "earnings_soon" lists names reporting within 5 trading days (binary ri
 Sentiment >= +0.7 and Quant >= 5/10, max 10% NAV). "pead" is post-earnings drift (+ = beat confirmed by the market)."""
     output_schema = """{
   "convictions": {"<TICKER>": number -1..1},
-  "equity_exposure": number between 0.97 and 1.00,
+  "equity_exposure": number between 0.95 and 1.00,
   "rationale": "max 80 words: the main bets and why",
   "response_to_risk": "max 50 words, only if responding to a Risk Manager rejection, else empty string",
   "trade_notes": {"<TICKER you add or exit>": {"thesis": "max 25 words", "invalidation": "max 20 words", "invalidation_px": number}},

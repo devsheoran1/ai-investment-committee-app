@@ -34,7 +34,7 @@ def _rr(**over):
 def test_each_hard_limit_breaches():
     cases = {
         "holdings": _rr(n_positions=9),
-        "cash": _rr(cash_weight=0.031),
+        "cash": _rr(cash_weight=0.051),
         "name": _rr(weights={"S0": 0.21, "S1": 0.1}),
         "sector": _rr(sector_weights={"Energy": 0.36}),
         "lev total": _rr(regime="risk_on", leveraged_etf_weight=0.31, leveraged_by_etf={"TQQQ": 0.15, "SOXL": 0.16}),
@@ -42,7 +42,7 @@ def test_each_hard_limit_breaches():
         "lev regime": _rr(regime="neutral", leveraged_etf_weight=0.11, leveraged_by_etf={"TQQQ": 0.11}),
         "inverse": _rr(regime="risk_off", inverse_etf_weight=0.26, inverse_by_etf={"SQQQ": 0.26}),
         "inverse outside risk-off": _rr(regime="neutral", inverse_etf_weight=0.05, inverse_by_etf={"SQQQ": 0.05}),
-        "vol": _rr(portfolio_vol_ann=0.26),
+        "vol": _rr(portfolio_vol_ann=0.36),
         "var": _rr(var_95_1d=0.051),
         "c11 warn": _rr(regime="risk_on", leveraged_etf_weight=0.12, leveraged_by_etf={"TQQQ": 0.12},
                         dd_state={"level": "warn", "lev_cap": 0.10, "drawdown": -0.08}, current_weights={"TQQQ": 0.12}),

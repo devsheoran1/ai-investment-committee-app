@@ -246,6 +246,12 @@ live init is Oct 22 14:30 Madrid). 7 runs, 20 trades (17 buys / 3 sells). What b
 - Keys tested Oct 21: Finnhub OK. Polygon OK for older days but **403 on same/previous day** (free tier = delayed EOD) → at 21:45 the snapshot will usually fall back to yfinance (flagged single-source). Watch item.
 - Tests: `tests/test_prices.py` (4/4). No live/LLM re-run done for this change.
 
+## Limits update (Oct 21, Dev)
+- Max portfolio vol 35% (was 25%, IPS A3). VaR95 1d stays 5%. Cash 0-5% (was <= 3%) = min 95% invested (A12); PM exposure 0.95-1.00.
+- Regime: any ONE risk-off signal (VIX > 25, SPY < 50 & 200dma, HYG/LQD > 1% below 20dma, VIX +30% 1d) blocks new leveraged buys
+  (plan_orders skip + Risk Manager hard check); 2 of 4 = full risk-off (unchanged). `macro_regime` now returns `lev_buy_block` (contract addition).
+- Tests: risk_limits fixtures moved to 5.1% cash / 36% vol; new test_one_risk_off_signal_blocks_leveraged_buys.
+
 ## Conflicts and how we resolved them
 
 | # | Conflict | Resolution |
