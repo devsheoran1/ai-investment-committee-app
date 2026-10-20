@@ -144,6 +144,8 @@ def daily_report(day: str | None = None) -> str:
           f"**NAV** ${nav:,.0f} · **since inception** {k.get('total_return', 0):+.2%} "
           f"(SPY {k.get('spy_return', 0):+.2%}) · **max drawdown** {k.get('max_drawdown', 0):.2%} · "
           f"**trades today** {len(t_day)}", ""]
+    import prices as px_src
+    md += ["## Data quality", "", px_src.quality_line(), ""]
 
     md += ["## Trades and reasoning", ""]
     if t_day is None or t_day.empty:

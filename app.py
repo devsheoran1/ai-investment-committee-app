@@ -36,7 +36,9 @@ ui.inject()
 def load_market():
     u = data.get_universe()
     md = data.get_market_data(u["symbol"].tolist())
-    return u, md["close"], md["volume"], data.DATA_SOURCE["prices"], data.DATA_SOURCE["universe"], data.is_synthetic()
+    import prices as px_src
+    return (u, md["close"], md["volume"], data.DATA_SOURCE["prices"], data.DATA_SOURCE["universe"], data.is_synthetic(),
+            dict(px_src.QUALITY))
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -47,7 +49,7 @@ def load_fundamentals(tickers: tuple, sectors: tuple):
         return {}
 
 
-universe, close, volume, source, uni_source, synthetic = load_market()
+universe, close, volume, source, uni_source, synthetic, quality = load_market()
 db.use_synthetic(synthetic)
 sector_of = dict(zip(universe["symbol"], universe["sector"]))
 kind_of = dict(zip(universe["symbol"], universe["asset_type"]))
@@ -138,6 +140,12 @@ st.markdown(f"<h2 style='margin-bottom:0'>AI Investment Committee</h2>"
             f"autonomous paper-trading fund · S&P 500 + leveraged ETFs · benchmark SPY</div>", unsafe_allow_html=True)
 if synthetic:
     st.warning("Yahoo Finance unreachable and nothing cached: this is the synthetic sandbox fund.")
+
+# Oct 21: Data quality box. Held names with no price today are valued at the last verified close and can't trade.
+import prices as px_src
+_stale = {t: px_src.STALE for t in db.get_positions() if t not in last_px}
+px_src.QUALITY.update({**quality, "flags": {**quality.get("flags", {}), **_stale}})
+(st.warning if px_src.QUALITY["flags"] else st.info)("**Data quality** · " + px_src.quality_line())
 
 ret = nav / config.STARTING_CAPITAL - 1
 spy_ret = None

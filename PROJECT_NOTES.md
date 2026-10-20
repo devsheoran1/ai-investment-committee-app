@@ -237,6 +237,15 @@ live init is Oct 22 14:30 Madrid). 7 runs, 20 trades (17 buys / 3 sells). What b
   set `config.JUNIOR_GEMINI_FALLBACK = True` (junior agents move to `gemini-3.5-flash-lite` after 3 Groq 429s), or route
   Sentiment straight to Gemini Flash (its batches are the biggest token user).
 
+## Price accuracy (Oct 21): `prices.py`
+- History: yfinance chunks of 50 → per-ticker retry (2×) → Stooq closes. Coverage logged ("511/513 priced; missing: …").
+- Execution: Finnhub quote vs yfinance; gap > 1% = "price unverified", order not executed (Trader logs it, C8.5). Finnhub down = "single-source price".
+- 21:45 snapshot: Polygon grouped-daily close vs yfinance, > 0.5% gaps logged, Polygon wins. Per-holding source stored in `daily_snapshots.price_sources` (new column, auto-migrated).
+- Held name with no price: last verified close, "stale price", no trading. Data quality box in dashboard header + daily report.
+- Throttles: Finnhub 55/min (free 60), Polygon 5/min. Keys `FINNHUB_API_KEY`, `POLYGON_API_KEY` in `.env`, never logged.
+- Keys tested Oct 21: Finnhub OK. Polygon OK for older days but **403 on same/previous day** (free tier = delayed EOD) → at 21:45 the snapshot will usually fall back to yfinance (flagged single-source). Watch item.
+- Tests: `tests/test_prices.py` (4/4). No live/LLM re-run done for this change.
+
 ## Conflicts and how we resolved them
 
 | # | Conflict | Resolution |

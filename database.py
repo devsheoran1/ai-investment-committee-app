@@ -125,6 +125,8 @@ def init_db(reset: bool = False) -> None:
         for col in ("name", "signals", "proposed_at"):
             if col not in cols:
                 c.execute(f"ALTER TABLE transactions ADD COLUMN {col} TEXT")
+        if "price_sources" not in {r[1] for r in c.execute("PRAGMA table_info(daily_snapshots)")}:
+            c.execute("ALTER TABLE daily_snapshots ADD COLUMN price_sources TEXT")   # Oct 21: per-holding source JSON
         mcols = {r[1] for r in c.execute("PRAGMA table_info(messages)")}
         for col, typ in (("system_prompt", "TEXT"), ("user_prompt", "TEXT"), ("raw_output", "TEXT"),
                          ("tokens", "INTEGER"), ("latency_s", "REAL")):
@@ -277,7 +279,8 @@ def execute_trade(run_id: int, symbol: str, side: str, shares: int, price: float
     return {"symbol": symbol, "side": side, "shares": shares, "price": price, "total": total, "id": tid}
 
 
-def record_snapshot(run_id: int | None, last_px: dict[str, float], benchmark_px: float) -> float:
+def record_snapshot(run_id: int | None, last_px: dict[str, float], benchmark_px: float,
+                    price_sources: dict | None = None) -> float:
     pos = get_positions()
     cash = get_cash()
     invested = sum(p["shares"] * last_px[t] for t, p in pos.items() if t in last_px)
@@ -291,6 +294,8 @@ def record_snapshot(run_id: int | None, last_px: dict[str, float], benchmark_px:
                   "total_equity=excluded.total_equity, cash=excluded.cash, invested=excluded.invested, "
                   "benchmark_px=excluded.benchmark_px, n_positions=excluded.n_positions, run_id=excluded.run_id",
                   (today(), _now(), nav, cash, invested, benchmark_px, len(pos), run_id))
+        if price_sources is not None:
+            c.execute("UPDATE daily_snapshots SET price_sources=? WHERE date=?", (json.dumps(price_sources), today()))
         c.execute("UPDATE simulation SET total_portfolio_value=?, current_date=? WHERE id=1", (nav, today()))
     return nav
 

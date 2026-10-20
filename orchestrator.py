@@ -30,6 +30,7 @@ import finbert
 import database as db
 import forecaster
 import morning_brief
+import prices as px_src
 import reflection
 import report
 from forecasters import horse_race, kronos_fc, lgbm
@@ -145,6 +146,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         for t in missing_held:
             last_px[t] = fb.get(t, positions[t]["avg_cost"])
             untradeable[t] = "no valid live price today; valued at last known close (C8.5)"
+            px_src.QUALITY["flags"][t] = px_src.STALE
     current_w, nav = db.current_weights(last_px)
     cash = db.get_cash()
     snaps = db.get_snapshots()
@@ -538,21 +540,30 @@ def execute_run(run_id: int, provider: str | None = None, prices: dict | None = 
     if prop is None or runs.loc[run_id, "status"] != "proposed":
         raise RuntimeError(f"Run {run_id} has no pending proposal (status: {runs.loc[run_id, 'status']}).")
     proposed_at = runs.loc[run_id, "finished_at"] or runs.loc[run_id, "started_at"]
+    live_block: dict[str, str] = {}
     if prices is None:
         age_h = (db.now() - _dt.datetime.fromisoformat(proposed_at)).total_seconds() / 3600
         if age_h > STALE_PROPOSAL_HOURS:
             db.set_run_status(run_id, "expired")
             raise RuntimeError(f"Proposal #{run_id} is {age_h:.1f} h old (proposed {db.madrid_et(proposed_at)}). "
                                f"Prices have moved: run the committee again.")
-        try:   # fresh prices at execution time (cache <= 60 min)
-            close = data.get_market_data(data.get_universe()["symbol"].tolist())["close"]
-            prices = _last_prices(close, [o["ticker"] for o in prop["orders"]])
-        except Exception:  # noqa: BLE001
-            prices = {}
+        # Oct 21: Finnhub quote cross-checked against yfinance; > 1% gap or no fresh price = order blocked (C8.5)
+        tick = [o["ticker"] for o in prop["orders"]]
+        live = px_src.live_prices(tick, last_verified=data.last_known_prices(tick))
+        prices = {}
+        for t, info in live.items():
+            if px_src.blocked(info):
+                live_block[t] = px_src.blocked(info)
+            elif info["px"]:
+                prices[t] = info["px"]
     init_mode = prop["mode"] == "init"
     room = len(prop["orders"]) if init_mode else max(0, config.MAX_TRADES_PER_DAY - db.trades_today())
     done, facts = [], []
     for o in prop["orders"][:room]:   # sells are first in the list, so they fund the buys
+        if o["ticker"] in live_block:
+            db.log_message(run_id, "Trader", Trader.title, "rules", "execution", 0,
+                           {"execute": False, "execution_notes": f"{o['ticker']} not executed: {live_block[o['ticker']]} (C8.5)"})
+            continue
         px = float(prices.get(o["ticker"], o["price"]))
         try:
             meta = {"thesis": o.get("thesis", ""), "invalidation": o.get("invalidation", ""),
@@ -689,8 +700,11 @@ def snapshot_only() -> float:
     close = data.get_market_data(universe["symbol"].tolist())["close"]
     db.use_synthetic(data.is_synthetic())
     db.init_db()
-    px = _last_prices(close, tickers)
-    nav = db.record_snapshot(None, px, px[config.BENCHMARK])
+    yf_px = _last_prices(close, tickers)
+    snap = px_src.snapshot_prices(tickers, yf_px, db.today(), last_verified=data.last_known_prices(tickers))
+    px = {t: v["px"] for t, v in snap.items()}
+    nav = db.record_snapshot(None, px, px[config.BENCHMARK],
+                             price_sources={t: {"source": v["source"], "flag": v["flag"]} for t, v in snap.items()})
     report.daily_report()
     _backup()
     return nav

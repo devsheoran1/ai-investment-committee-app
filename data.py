@@ -171,48 +171,9 @@ def label(ticker: str) -> str:
 # prices (OHLCV for the whole universe in one batch)
 # --------------------------------------------------------------------------- #
 def _download(tickers: list[str], period: str) -> dict[str, pd.DataFrame]:
-    import yfinance as yf
-    raw = yf.download(tickers, period=period, auto_adjust=True, progress=False,
-                      threads=True, group_by="column")
-    if raw is None or raw.empty:
-        raise RuntimeError("yfinance returned no data")
-    fields = {}
-    for f in ("Open", "High", "Low", "Close", "Volume"):
-        df = raw[f] if isinstance(raw.columns, pd.MultiIndex) else raw[[f]].rename(columns={f: tickers[0]})
-        fields[f.lower()] = df
-    close = fields["close"]
-    missing = [t for t in tickers if t not in close.columns or close[t].isna().all()]
-    # Yahoo often drops names from a big batch (Oct 20: 131 of 513). Retry them as a second batch,
-    # in chunks, whatever the count; then one by one for what's still missing.
-    for chunk_start in range(0, len(missing), 100):
-        chunk = missing[chunk_start:chunk_start + 100]
-        try:
-            time.sleep(1.0)
-            again = yf.download(chunk, period=period, auto_adjust=True, progress=False, threads=True,
-                                group_by="column")
-            if again is not None and not again.empty:
-                for f in ("Open", "High", "Low", "Close", "Volume"):
-                    part = again[f] if isinstance(again.columns, pd.MultiIndex) else again[[f]].rename(columns={f: chunk[0]})
-                    part = part[[c for c in part.columns if part[c].notna().any()]]
-                    fields[f.lower()] = fields[f.lower()].drop(columns=list(part.columns), errors="ignore").join(part, how="outer")
-        except Exception:  # noqa: BLE001
-            pass
-    close = fields["close"]
-    missing = [t for t in tickers if t not in close.columns or close[t].isna().all()]
-    if 0 < len(missing) <= 40:
-        time.sleep(1.0)
-        for t in missing:
-            try:
-                one = yf.download([t], period=period, auto_adjust=True, progress=False, threads=False)
-                if one is None or one.empty:
-                    continue
-                for f in ("Open", "High", "Low", "Close", "Volume"):
-                    col = one[f]
-                    col = col[t] if isinstance(col, pd.DataFrame) else col
-                    fields[f.lower()] = fields[f.lower()].drop(columns=[t], errors="ignore").join(
-                        col.rename(t), how="outer")
-            except Exception:  # noqa: BLE001
-                continue
+    """Chunks of 50 -> per-ticker retry -> Stooq (prices.py). Oct 20: Yahoo's single batch returned 382/513."""
+    import prices
+    fields = prices.download_history(tickers, period)
     close = fields["close"]
     if config.BENCHMARK not in close.columns or close[config.BENCHMARK].isna().all():
         raise RuntimeError("benchmark missing from download")
