@@ -33,6 +33,13 @@ def _rsi(series: pd.Series, n: int = 14) -> float:
     return float(100 - 100 / (1 + gain / loss)) if loss > 0 else 100.0
 
 
+def _macd(p: pd.Series) -> dict:
+    """MACD 12/26/9 (IPS C3.2: confirmation only, low weight). Histogram as % of price."""
+    m = p.ewm(span=12, adjust=False).mean() - p.ewm(span=26, adjust=False).mean()
+    sig = m.ewm(span=9, adjust=False).mean()
+    return {"macd_hist_pct": round(float((m.iloc[-1] - sig.iloc[-1]) / p.iloc[-1]) * 100, 2)}
+
+
 def technicals(prices: pd.DataFrame, tickers: list[str]) -> dict[str, dict]:
     out = {}
     for t in tickers:
@@ -47,6 +54,7 @@ def technicals(prices: pd.DataFrame, tickers: list[str]) -> dict[str, dict]:
             "px_vs_200dma_pct": round(float(p.iloc[-1] / p.tail(200).mean() - 1) * 100, 1),
             "rsi_14": round(_rsi(p), 1),
             "vol_3m_ann_pct": round(float(r.tail(63).std() * np.sqrt(TRADING_DAYS)) * 100, 1),
+            **_macd(p),
         }
     return out
 

@@ -151,6 +151,34 @@ live init is Oct 22 14:30 Madrid). 7 runs, 20 trades (17 buys / 3 sells). What b
 - Cost: + ~2 LLM calls per run (DA + PM answer) + 1 Gemini call; first run of the day ~65 s in mock (earnings/fundamentals for 60 names).
 - Tests: `tests/test_market_awareness.py`.
 
+## Stage 4 (Oct 20): Quant reliability + model honesty (C3.2–C3.7)
+- **LSTM rebuilt to C3.5** (`forecaster.py`): 60 days of returns, volume change, 20-day vol and SPY returns; two heads
+  (P(up over 5 days), BCE + 5-day return, Huber, kept for the IC). **Leakage fixed**: every series is scaled by its vol
+  over the training window only. **Monthly walk-forward** over the last 250 trading days (12 retrains, each on labels known
+  before its block; the newest block model is the live model, ≤ 1 month old). ~65 s on the M2 → cached per data date.
+  `PRICE_HISTORY` raised to 3y so the first block still trains on ≥ 1 year.
+- **LightGBM** (`forecasters/lgbm.py`): 1/3/12-1m momentum, 20d vol, RSI-14, distance from 50dma, industry momentum (1m,
+  GICS sub-industry peers), 1-week reversal, post-earnings drift; same monthly walk-forward. Runs in a **subprocess**
+  (`lgbm_worker.py`) because LightGBM's OpenMP runtime aborts the process when PyTorch's is loaded too. Needed
+  `conda install -c conda-forge llvm-openmp` on the M2 (libomp). ~2 s.
+- **Horse race** (`forecasters/horse_race.py`): LSTM vs Kronos-mini vs LightGBM vs naive 5d momentum on the same **20**
+  non-overlapping 5-day origins (was 6). Kronos uses 1 sampled path per backtest origin to keep it to ~40 s (cached daily).
+  **C3.4 weights for every model**: trust hit rate over its own walk-forward set (≥ 100 predictions) vs the "always up"
+  baseline: < 52% or not beating it → 0; 52–55% → 25%; > 55% → 50%; plus the IC t-stat floor (t < 1 → 0); models capped at
+  50% in total. Table in the daily report and the Trading Floor transcript.
+- **Quant agent code** (role_prompt untouched, Jayesh is rewriting it): Python computes the C3.2 signals (12-1m momentum,
+  trend vs 50/200dma, RSI-14, MACD 12/26/9 at low weight, 3m vol as a risk adjustment) into a `breakdown` and a
+  `rule_score`; `validate()` enforces C3.3 (RSI > 75 halves a positive score; RSI < 25 never positive unless above the
+  200dma) and adds `flags` (overbought / oversold_watch / below_200dma) and `model_weights`.
+- **C3.7 zero-score guard**: > 30% exact 0.0 → split the batch in two and retry → gpt-oss-120b → rule-based score. The
+  path taken is stored in `quant_fallback` and appended to every trade's `signals` ("Q from rule-based ...").
+- First honest numbers (Oct 20, 3y data, 43-name shortlist, 20 common origins): LSTM hit 50%, IC −0.150 (t −2.6),
+  trust-hit 53% vs always-up 57%; Kronos hit 47%, IC −0.029 (t −0.8); LightGBM hit 54%, IC +0.019 (t +0.3), trust-hit 54% vs
+  56%; naive 5d momentum hit 50%, IC −0.070. **No model passes C3.4 → all model weights 0, Quant runs on technicals.**
+  Short-horizon returns are close to unpredictable; the gate is doing its job, and that is the presentation point.
+- Cost: cold first run of the day ~112 s in mock (3y download + walk-forward + 20 Kronos origins), cached runs ~3–30 s.
+- Tests: `tests/test_quant_models.py`.
+
 ## Conflicts and how we resolved them
 
 | # | Conflict | Resolution |
@@ -193,6 +221,9 @@ Not yet built:
 
 ## Agent output formats (contracts between teammates)
 
+- **Quant output (Stage 4, owner Jayesh; consumer PM, owner Rima):** each `signals[t]` gains `breakdown`
+  {momentum_12_1, trend, macd, rsi, models}, `flags`, `rule_score`; top level gains `model_weights` {lstm, kronos, lgbm} and
+  optional `quant_fallback`. Score / comment unchanged. Model card fields: `walk_forward_days`, `always_up_hit_rate`.
 - **Stage 5 (Oct 20):** new agent **Devil's Advocate** (in ROSTER; owner TBD): input `ideas` (top 3 BUY orders), output
   `{objections: {ticker: {bear_case, evidence, verdict}}}`. **PM** gains `da_responses` (required when objections exist) and
   sees `earnings_soon`, `pead`, `earnings_fast_track_eligible`. **Research** gains optional `ratings[t].earnings_preview`

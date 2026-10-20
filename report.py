@@ -116,6 +116,17 @@ def daily_report(day: str | None = None) -> str:
                 md.append(f"- Macro: regime **{c.get('regime')}** ({c.get('regime_note', '')}). {c.get('rationale', '')}")
             elif m["agent"] == "Risk Manager" and m["stage"] in ("risk_review", "risk_override"):
                 last_risk = c
+            elif m["agent"] == "System" and "scoreboard" in c:
+                md.append("- Model horse race (same out-of-sample origins; weights per IPS C3.4):")
+                md.append("")
+                md.append("  | model | hit rate | rank IC | IC t-stat | trust hit (walk-forward) | always-up | weight |")
+                md.append("  |---|---|---|---|---|---|---|")
+                f = lambda v, fmt: "–" if v is None else fmt.format(v)
+                for mname, sc in c["scoreboard"].items():
+                    md.append(f"  | {mname} | {f(sc.get('hit'), '{:.1%}')} | {f(sc.get('ic'), '{:+.3f}')} | "
+                              f"{f(sc.get('ic_t'), '{:+.2f}')} | {f(sc.get('trust_hit'), '{:.1%}')} | "
+                              f"{f(sc.get('always_up'), '{:.1%}')} | {f((c.get('weights') or {}).get(mname), '{:.0%}')} |")
+                md.append("")
             elif m["agent"] == "Quant Analyst" and c.get("model_scoreboard"):
                 md.append(f"- Models: {c['model_scoreboard']}")
             elif m["agent"] == "CIO":

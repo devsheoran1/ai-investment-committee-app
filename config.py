@@ -101,7 +101,7 @@ ETF_UNDERLYING = {"TQQQ": "QQQ", "UPRO": "SPY", "SPXL": "SPY", "SOXL": "SOXX", "
                   "TNA": "IWM", "LABU": "XBI", "ERX": "XLE", "CURE": "XLV", "DRN": "XLRE", "NAIL": "ITB",
                   "DPST": "KRE", "UDOW": "DIA", "SQQQ": "QQQ", "SPXU": "SPY", "SOXS": "SOXX", "SDOW": "DIA"}
 
-PRICE_HISTORY = "2y"     # enough for 12-1m momentum + the LSTM; keeps the S&P 500 download fast
+PRICE_HISTORY = "3y"     # 12-1m momentum + the 250-day monthly walk-forward of the LSTM/LightGBM (C3.4/C3.5)
 
 # Screening funnel (IPS Part B). Python screens ~510 names down to a shortlist
 # so the agents never see more than a few dozen tickers (Brief §6: token budget).

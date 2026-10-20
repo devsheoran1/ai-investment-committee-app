@@ -28,7 +28,7 @@ import forecaster
 import morning_brief
 import reflection
 import report
-from forecasters import horse_race, kronos_fc
+from forecasters import horse_race, kronos_fc, lgbm
 import screener
 from committee import (ChiefInvestmentOfficer, EquityResearchAnalyst, MacroStrategist,
                        DevilsAdvocate, PortfolioManager, QuantAnalyst, ReflectionAnalyst, RiskManager, SentimentAnalyst,
@@ -163,18 +163,30 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
 
     emit("model", f"Training the LSTM on {len(shortlist)} shortlisted names")
     fc_cols = list(dict.fromkeys(shortlist + [config.BENCHMARK]))
-    fc = forecaster.forecast(close[fc_cols].ffill().dropna(), shortlist)
+    px_fc = close[fc_cols].ffill().dropna()
+    day = px_fc.index[-1].date()
+    # C3.5 monthly walk-forward LSTM: ~1 min on the M2, so cached per data date (3 runs/day reuse it)
+    fc = data._cached(data._key(f"lstm_wf_{day}", shortlist),
+                      lambda: forecaster.forecast(px_fc, shortlist, market.get("volume")))
 
     race, race_sec = None, 0.0
     try:   # Kronos + horse race: optional, any failure = LSTM-only (never crashes the run)
         import time as _t
         t0 = _t.time()
-        px_fc = close[fc_cols].ffill().dropna()
         mk = {f: v[[c for c in fc_cols if c in v.columns]] for f, v in market.items()}
-        kr = data._cached(data._key(f"kronos_{px_fc.index[-1].date()}", shortlist),
+        kr = data._cached(data._key(f"kronos_{day}", shortlist),
                           lambda: kronos_fc.forecast(mk, shortlist) or {}, keep_if=bool)
         kr_live = (kr or {}).get("forecasts") or None
-        race = horse_race.run(px_fc, mk, shortlist, fc.get("oos_preds", []), fc["forecasts"], kr_live)
+        industries = dict(zip(universe["symbol"], universe["industry"]))
+        industries = {t: i for t, i in industries.items() if isinstance(i, str) and asset_types.get(t) == "stock"}
+        lg = data._cached(data._key(f"lgbm_{day}", shortlist),
+                          lambda: lgbm.forecast(close, [t for t in shortlist if t in close.columns], industries, earnings) or {},
+                          keep_if=lambda v: bool(v) and "error" not in v)
+        if lg and "error" in lg:
+            emit("model", f"LightGBM unavailable ({lg['error'][:80]})")
+            lg = None
+        race = data._cached(data._key(f"race_{day}_{bool(kr_live)}_{bool(lg)}", shortlist),
+                            lambda: horse_race.run(px_fc, mk, shortlist, fc, lg, kr_live))
         race_sec = _t.time() - t0
     except Exception as e:  # noqa: BLE001
         emit("model", f"Horse race skipped ({str(e)[:100]}); LSTM-only")
@@ -248,6 +260,9 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         for t, v in pead.items():
             if t in comp:
                 comp[t]["pead"] = v.get("drift_score")
+        if ctx["quant"].get("quant_fallback"):
+            for t in comp:
+                comp[t]["quant_fallback"] = ctx["quant"]["quant_fallback"]
         ctx["composite"] = comp
         ranked = sorted(comp, key=lambda t: -comp[t]["composite"])
         rank = {t: i + 1 for i, t in enumerate(ranked)}
@@ -588,6 +603,8 @@ def _signals_text(c: dict | None) -> str:
         txt += f" · no signal from {', '.join(c['na'])} (weight redistributed, C5.2)"
     if c.get("pead"):
         txt += f" · PEAD {c['pead']:+.2f}"
+    if c.get("quant_fallback"):
+        txt += f" · Q from {c['quant_fallback']}"
     return txt
 
 
