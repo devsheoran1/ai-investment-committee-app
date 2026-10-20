@@ -106,6 +106,23 @@ live init is Oct 22 14:30 Madrid). 7 runs, 20 trades (17 buys / 3 sells). What b
 - Mock coverage on Oct 20 data: 42 of 43 names with a non-zero score (was ~0 in the dry run).
 - Tests: `tests/test_sentiment.py`.
 
+## Stage 3 (Oct 20): human-readable reasons, names, Madrid time (E1, E2, E7, D13, C0.4)
+- **Trade Rationale Writer** (`committee/rationale_writer.py`, gpt-oss-20b, one call after execution): 2–3 plain-English
+  sentences per trade (what the company is, why now, portfolio effect, exit trigger = invalidation price) + one Risk
+  Manager line. Facts only from that trade's agent outputs. Guard: text naming another ticker or a price not in the facts
+  falls back to a deterministic template (also used in mock and on failure). Logged as stage `rationale`.
+- Reasons are per trade (C5.5): forced reason → PM's per-trade thesis → that name's strongest signal. The PM's batch
+  rationale is no longer pasted onto every row (dry run: FAS mentioned on trades that had nothing to do with FAS).
+- `trades.csv` (E1): date, hour_madrid, ticker, name, side, price, shares, total, reason, signals. Scores live in
+  `signals` only. `transactions` gained `name`, `signals`, `proposed_at` (auto-migrated on open).
+- Names everywhere ("PSX · Phillips 66", `data.label`): app tables, daily report, forum post, Word summary.
+- Time (D13): all stored timestamps were already Madrid; the "run 08:14 / trades 13:34" in the dry run was a **5.3 h gap
+  between proposal and Execute**, booked at stale proposal prices. Now: trades are priced and stamped at execution time,
+  the report shows Madrid with ET in brackets, and a proposal older than 2 h is refused (`expired`).
+  `scripts/migrate_madrid_time.py` normalises any non-Madrid timestamp and backfills names / proposal times; run on the
+  archived dry run: 0 timestamps changed, 5 stale executions flagged.
+- Tests: `tests/test_reasons.py`.
+
 ## Conflicts and how we resolved them
 
 | # | Conflict | Resolution |
@@ -148,6 +165,8 @@ Not yet built:
 
 ## Agent output formats (contracts between teammates)
 
+- **Orders / trades (Oct 20):** each order carries `facts`, `why`, `name`, `signals_text`; `reason` is plain English.
+  New agent `Trade Rationale Writer` (not in ROSTER): input `facts[]`, output `{rationales: {ticker: text}, fallback_used_for}`.
 - **Sentiment output (Oct 20, owner Mer):** `sentiment[t].score` may be **null** (no news / no answer = n/a). New keys
   `finbert` (avg FinBERT of the name's headlines), `llm_score`, `n_headlines`, `based_on` (headlines the score rests on),
   optional `retried_on`. Input `news[t]` is now a list of dicts `{title, source, ts (Madrid), ts_utc, url, finbert}`

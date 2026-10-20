@@ -18,6 +18,7 @@ import io
 import logging
 import os
 import pickle
+import re
 import time
 import zlib
 from concurrent.futures import ThreadPoolExecutor
@@ -143,6 +144,27 @@ def get_universe() -> pd.DataFrame:
             stocks[col] = None
     out = pd.concat([stocks[["symbol", "name", "sector", "industry", "cik", "asset_type"]], etfs], ignore_index=True)
     return out.drop_duplicates("symbol").reset_index(drop=True)
+
+
+_NAMES: dict = {}
+
+
+def names_map() -> dict[str, str]:
+    """ticker -> company/ETF name (IPS E7), from data/universe_sp500.csv + config.ETF_NAMES."""
+    if not _NAMES:
+        try:
+            u = pd.read_csv(config.UNIVERSE_CSV)
+            _NAMES.update(dict(zip(u["symbol"], u["name"])))
+        except (OSError, KeyError, ValueError):
+            pass
+        _NAMES.update(config.ETF_NAMES)
+    return _NAMES
+
+
+def label(ticker: str) -> str:
+    """'PSX · Phillips 66' (IPS E7)."""
+    n = names_map().get(ticker)
+    return f"{ticker} · {n}" if n else ticker
 
 
 # --------------------------------------------------------------------------- #
@@ -463,7 +485,9 @@ def _fetch_news(ticker: str, name: str = "", cik: str | None = None, n: int = 10
     # relevance: Yahoo's per-ticker feed mixes in market-wide stories; keep headlines that name the company or
     # ticker (SEC filings are the company's own by definition). Max 4 per source so one feed can't crowd out the rest.
     keys = _name_keys(ticker, name)
-    items = [it for it in items if it["source"] == "SEC EDGAR 8-K" or any(k in it["title"].lower() for k in keys)]
+    tick_re = re.compile(rf"(?<![A-Za-z]){re.escape(ticker)}(?![A-Za-z])")       # case-sensitive: "MAR" != "Mar 2027"
+    items = [it for it in items if it["source"] == "SEC EDGAR 8-K" or tick_re.search(it["title"])
+             or any(k in it["title"].lower() for k in keys)]
     items.sort(key=lambda it: it["ts_utc"], reverse=True)
     per_src, out = {}, []
     for it in items:
@@ -479,13 +503,11 @@ _SUFFIXES = {"inc", "inc.", "corp", "corp.", "corporation", "company", "co", "co
 
 def _name_keys(ticker: str, name: str) -> list[str]:
     """Lower-case tokens a relevant headline should contain: the ticker and the company's distinctive name."""
-    keys = [f"({ticker.lower()})", f" {ticker.lower()} ", f"{ticker.lower()}:", f"${ticker.lower()}"]
+    keys = []                       # the ticker itself is matched case-sensitively in _fetch_news
     words = [w for w in name.replace(",", " ").split() if w.lower() not in _SUFFIXES]
     if words:
         first = words[0].lower()
         keys.append(first if len(first) > 3 else " ".join(w.lower() for w in words[:2]))
-    if len(ticker) >= 3:
-        keys.append(ticker.lower() + " ")
     return keys
 
 

@@ -519,7 +519,7 @@ def plan_orders(target_w: dict[str, float], positions: dict[str, dict], px: dict
         post_val = _post_values(positions, sells + final_buys, px)
         excess = avail - config.TARGET_CASH * nav
         lev_total = sum(v for t, v in post_val.items() if asset_types.get(t) == "leveraged_etf")
-        lev_room_total = (lev_cap if lev_cap is not None else L["max_leveraged_total"]) * nav - lev_total
+        lev_room_total = 0.995 * (lev_cap if lev_cap is not None else L["max_leveraged_total"]) * nav - lev_total
 
         def room(t):
             k = asset_types.get(t, "stock")
@@ -533,16 +533,24 @@ def plan_orders(target_w: dict[str, float], positions: dict[str, dict], px: dict
                 r = min(r, lev_room_total)
             return max(0.0, r)
 
-        for i, o in enumerate(sorted(final_buys, key=lambda o: -o["priority"])):
-            if excess <= 0:
+        # spread the excess across today's BUYs pro rata to their size (not "fill the first one to its cap"),
+        # a few passes so what one name can't take (cap/sector room) goes to the others
+        for _ in range(4):
+            eligible = [o for o in final_buys if not (no_new_leveraged and asset_types.get(o["ticker"]) == "leveraged_etf")
+                        and room(o["ticker"]) >= o["price"]]
+            base = sum(o["notional"] for o in eligible)
+            if excess < 1 or not eligible or base <= 0:
                 break
-            if o["ticker"] in held_names and no_new_leveraged and asset_types.get(o["ticker"]) == "leveraged_etf":
-                continue
-            add_sh = int(math.floor(min(room(o["ticker"]), excess) / o["price"]))
-            if add_sh > 0:
-                j = final_buys.index(o)
-                final_buys[j] = {**o, "shares": o["shares"] + add_sh, "notional": round((o["shares"] + add_sh) * o["price"], 2),
-                                 "upsized": True}
+            pool = excess
+            for o in eligible:
+                want = pool * o["notional"] / base
+                add_sh = int(math.floor(min(room(o["ticker"]), want, excess) / o["price"]))
+                if add_sh <= 0:
+                    continue
+                j = next(i for i, x in enumerate(final_buys) if x["ticker"] == o["ticker"])
+                cur = final_buys[j]
+                final_buys[j] = {**cur, "shares": cur["shares"] + add_sh,
+                                 "notional": round((cur["shares"] + add_sh) * cur["price"], 2), "upsized": True}
                 post_val[o["ticker"]] = post_val.get(o["ticker"], 0.0) + add_sh * o["price"]
                 if asset_types.get(o["ticker"]) == "leveraged_etf":
                     lev_room_total -= add_sh * o["price"]

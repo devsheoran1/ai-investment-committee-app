@@ -356,14 +356,31 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
                                             f"No new trades; forced exits only. " + cio["committee_summary"])
 
         # ---------------------------------------------------------- 7. Trader -- #
+        post_final = _post_trade_weights(positions, cash, orders, last_px)
+        risk_line = ("Risk Manager: approved, all hard limits pass" if risk["decision"] == "approve" else "Risk Manager: rejected") + \
+            (" (after mechanical de-risk)." if "mechanical" in str(risk.get("override") or "") else ".")
         for o in orders:
-            o["full_exit"] = o["side"] == "SELL" and o["shares"] >= positions.get(o["ticker"], {}).get("shares", 0)
-            o["reason"] = _reason(o, comp, pm, risk)
-            o.update(reflection.trade_notes(o, (pm.get("trade_notes") or {}).get(o["ticker"]), comp.get(o["ticker"])),
-                     sector=sectors.get(o["ticker"]))
-            resp = (pm.get("invalidation_responses") or {}).get(o["ticker"])
-            if resp and o["side"] == "SELL" and o["ticker"] in {i["ticker"] for i in ctx.get("invalidated", [])}:
+            t = o["ticker"]
+            o["full_exit"] = o["side"] == "SELL" and o["shares"] >= positions.get(t, {}).get("shares", 0)
+            o["why"] = _why(o, ctx, pm)                                     # per-trade, never the batch note (C5.5)
+            o["reason"] = o["why"]
+            o.update(reflection.trade_notes(o, (pm.get("trade_notes") or {}).get(t), comp.get(t)), sector=sectors.get(t))
+            resp = (pm.get("invalidation_responses") or {}).get(t)
+            if resp and o["side"] == "SELL" and t in {i["ticker"] for i in ctx.get("invalidated", [])}:
                 o["thesis"] = f"Invalidation hit: {resp}"[:300]
+            o["name"] = names.get(t, t)
+            o["signals_text"] = _signals_text(comp.get(t))
+            o["facts"] = {"ticker": t, "name": names.get(t, t), "sector": sectors.get(t), "side": o["side"],
+                          "shares": o["shares"], "notional": o["notional"], "weight_before": o["current_weight"],
+                          "weight_after": round(post_final.get(t, 0.0), 4), "why": o["why"],
+                          "composite_10": (comp.get(t) or {}).get("composite_10"),
+                          "news": (ctx["sentiment"]["sentiment"].get(t) or {}).get("key_driver"),
+                          "quant_comment": (ctx["quant"]["signals"].get(t) or {}).get("comment"),
+                          "research": (ctx["research"]["ratings"].get(t) or {}).get("thesis"),
+                          "invalidation_px": o.get("invalidation_px") if o["side"] == "BUY" else None,
+                          "forced_reason": o.get("forced_reason"), "replacement": o.get("replacement", False)}
+            from committee.rationale_writer import template as _tmpl
+            o["reason"] = _tmpl(o["facts"]) + " " + risk_line
         trader, _ = Trader().run({"orders": orders, "trades_today": db.trades_today(), "cash": cash,
                                   "init_mode": init_mode, "nav_jump_halt": nav_jump})
         trader["skipped_by_planner"] = skipped
@@ -424,31 +441,106 @@ def intraday_recheck(provider: str | None = None, progress=None, execute: bool =
     return run_committee(provider, progress, execute=execute, extra_forced=hits, _skip_run_limit=True)
 
 
-def execute_run(run_id: int) -> dict:
-    """Brief §8.2 Execution Agent: commit an approved proposal to SQLite."""
+STALE_PROPOSAL_HOURS = 2
+
+
+def execute_run(run_id: int, provider: str | None = None, prices: dict | None = None) -> dict:
+    """Brief §8.2 Execution Agent: commit an approved proposal to SQLite.
+    D13 / A19: trades are stamped at EXECUTION time (Madrid) and priced at the latest price then, not at the
+    proposal's. A proposal older than 2 hours is refused (Oct 20: proposed 08:14, executed 13:34 at stale prices).
+    After execution the Trade Rationale Writer turns each trade's facts into plain English (IPS C0.4/E2)."""
+    import datetime as _dt
     prop = db.get_proposal(run_id)
     runs = db.get_runs().set_index("id")
     if prop is None or runs.loc[run_id, "status"] != "proposed":
         raise RuntimeError(f"Run {run_id} has no pending proposal (status: {runs.loc[run_id, 'status']}).")
+    proposed_at = runs.loc[run_id, "finished_at"] or runs.loc[run_id, "started_at"]
+    if prices is None:
+        age_h = (db.now() - _dt.datetime.fromisoformat(proposed_at)).total_seconds() / 3600
+        if age_h > STALE_PROPOSAL_HOURS:
+            db.set_run_status(run_id, "expired")
+            raise RuntimeError(f"Proposal #{run_id} is {age_h:.1f} h old (proposed {db.madrid_et(proposed_at)}). "
+                               f"Prices have moved: run the committee again.")
+        try:   # fresh prices at execution time (cache <= 60 min)
+            close = data.get_market_data(data.get_universe()["symbol"].tolist())["close"]
+            prices = _last_prices(close, [o["ticker"] for o in prop["orders"]])
+        except Exception:  # noqa: BLE001
+            prices = {}
     init_mode = prop["mode"] == "init"
     room = len(prop["orders"]) if init_mode else max(0, config.MAX_TRADES_PER_DAY - db.trades_today())
-    done = []
+    done, facts = [], []
     for o in prop["orders"][:room]:   # sells are first in the list, so they fund the buys
+        px = float(prices.get(o["ticker"], o["price"]))
         try:
             meta = {"thesis": o.get("thesis", ""), "invalidation": o.get("invalidation", ""),
                     "invalidation_px": o.get("invalidation_px"), "entry_date": prop.get("asof"),
                     "regime": prop.get("regime"), "sector": o.get("sector"), "signals": o.get("signals", {}),
                     "horizon_days": 5}
-            done.append(db.execute_trade(run_id, o["ticker"], o["side"], o["shares"], o["price"], o["reason"], meta))
+            tr = db.execute_trade(run_id, o["ticker"], o["side"], o["shares"], px, o["reason"], meta,
+                                  name=o.get("name"), signals=o.get("signals_text"), proposed_at=proposed_at)
+            done.append(tr)
+            facts.append({**(o.get("facts") or {"ticker": o["ticker"], "side": o["side"], "weight_before": 0.0,
+                                                 "weight_after": 0.0}), "price": round(px, 2), "trade_id": tr["id"]})
         except ValueError as e:
             db.log_message(run_id, "Trader", Trader.title, "rules", "execution", 0,
                            {"execute": False, "execution_notes": f"{o['ticker']} rejected at execution: {e}"})
+    if facts:
+        _write_rationales(run_id, facts, prop, provider or runs.loc[run_id, "provider"])
     db.set_run_status(run_id, "executed" if done else "no_trade")
     nav = db.record_snapshot(run_id, prop["last_px"], prop["benchmark_px"])
     csv_path = db.export_trades_csv()
     rep = report.daily_report()
     return {"status": "executed" if done else "no_trade", "trades": done, "nav": nav, "trades_csv": csv_path,
             "daily_report": rep}
+
+
+def _write_rationales(run_id, facts, prop, provider):
+    """One call after execution; falls back to the deterministic template on any failure (D11)."""
+    from committee.rationale_writer import TradeRationaleWriter, template
+    risk_lines = {o["ticker"]: o["reason"].split("Risk Manager:", 1)[1] for o in prop["orders"] if "Risk Manager:" in o["reason"]}
+    ctx = {"facts": facts, "all_tickers": list(data.names_map())}
+    w = TradeRationaleWriter()
+    try:
+        out, model = w.run(ctx, LLMClient(provider))
+    except Exception as e:  # noqa: BLE001
+        out, model = {"rationales": {f["ticker"]: template(f) for f in facts}, "fallback_used_for": [f["ticker"] for f in facts]}, \
+            f"FAILED ({str(e)[:100]}): template"
+    db.log_message(run_id, w.name, w.title, model, "rationale", 0, out)
+    for f in facts:
+        txt = out["rationales"].get(f["ticker"]) or template(f)
+        rl = risk_lines.get(f["ticker"])
+        db.set_trade_reason(f["trade_id"], txt + (f" Risk Manager:{rl}" if rl else ""))
+
+
+def _why(o, ctx, pm) -> str:
+    """The one-line reason for THIS trade (C5.5): forced reason, the PM's per-trade thesis, else the strongest
+    specific signal for this name. Never the PM's batch rationale."""
+    t = o["ticker"]
+    if o.get("forced"):
+        return o["forced_reason"]
+    note = ((pm.get("trade_notes") or {}).get(t) or {}).get("thesis")
+    if note:
+        return note
+    sent = ctx["sentiment"]["sentiment"].get(t) or {}
+    q = ctx["quant"]["signals"].get(t) or {}
+    if o.get("replacement"):
+        return "it is the best-ranked unheld name to replace an exit and keep at least 10 holdings"
+    if o["side"] == "SELL":
+        return f"its scores fell behind the best alternatives ({q.get('comment') or 'weaker momentum'})"
+    if sent.get("score") is not None and abs(sent["score"]) >= 0.3 and sent.get("key_driver"):
+        return f"news: {sent['key_driver']}"
+    return q.get("comment") or "it ranks among the strongest names on our combined scores"
+
+
+def _signals_text(c: dict | None) -> str:
+    if not c:
+        return ""
+    f = lambda v: "n/a" if v is None else f"{v:+.2f}"
+    txt = (f"composite {c.get('composite_10')}/10 · Q {f(c.get('quant'))} · S {f(c.get('sentiment'))} · "
+           f"R {f(c.get('research'))} · M {f(c.get('macro'))}")
+    if c.get("na"):
+        txt += f" · no signal from {', '.join(c['na'])} (weight redistributed, C5.2)"
+    return txt
 
 
 def snapshot_only() -> float:

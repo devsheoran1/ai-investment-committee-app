@@ -63,6 +63,9 @@ def test_feed_parser_keeps_source_and_madrid_time():
 def test_relevance_filter_drops_unrelated_headlines():
     keys = data._name_keys("NVDA", "Nvidia")
     assert any(k in "nvidia stocks fall" for k in keys) and not any(k in "nuscale stock closed lower" for k in keys)
+    import re
+    rx = re.compile(r"(?<![A-Za-z])MAR(?![A-Za-z])")
+    assert rx.search("Marriott (MAR) beats") and not rx.search("TSLW Mar 2027 12.000 put")
 
 
 def test_intraday_recheck_triggers_sell_through_normal_path():

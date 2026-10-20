@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS positions (
 CREATE TABLE IF NOT EXISTS transactions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT, hour TEXT, action TEXT, symbol TEXT, shares INTEGER, price REAL,
-    total REAL, reason TEXT, run_id INTEGER, cost REAL
+    total REAL, reason TEXT, run_id INTEGER, cost REAL, name TEXT, signals TEXT, proposed_at TEXT
 );
 CREATE TABLE IF NOT EXISTS daily_snapshots (
     date TEXT PRIMARY KEY, ts TEXT, total_equity REAL, cash REAL, invested REAL,
@@ -81,6 +81,23 @@ def _now() -> str:
     return now().isoformat(timespec="seconds")
 
 
+ET = ZoneInfo("America/New_York")
+
+
+def madrid_et(ts: str | None) -> str:
+    """'2026-10-20 15:34 Madrid (09:34 ET)' from a stored ISO timestamp (IPS D13)."""
+    if not ts:
+        return ""
+    try:
+        d = dt.datetime.fromisoformat(ts)
+    except ValueError:
+        return ts
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=MADRID)
+    m = d.astimezone(MADRID)
+    return f"{m:%Y-%m-%d %H:%M} Madrid ({m.astimezone(ET):%H:%M} ET)"
+
+
 def today() -> str:
     return now().date().isoformat()
 
@@ -103,6 +120,11 @@ def init_db(reset: bool = False) -> None:
                       "runs", "messages", "regime_state", "reflections"):
                 c.execute(f"DROP TABLE IF EXISTS {t}")
         c.executescript(SCHEMA)
+        # forward-compatible migrations for DBs created before Oct 20
+        cols = {r[1] for r in c.execute("PRAGMA table_info(transactions)")}
+        for col in ("name", "signals", "proposed_at"):
+            if col not in cols:
+                c.execute(f"ALTER TABLE transactions ADD COLUMN {col} TEXT")
         if c.execute("SELECT COUNT(*) FROM simulation").fetchone()[0] == 0:
             c.execute("INSERT INTO simulation (id, current_date, cash_balance, total_portfolio_value, inception_date) "
                       "VALUES (1, ?, ?, ?, NULL)", (today(), config.STARTING_CAPITAL, config.STARTING_CAPITAL))
@@ -202,7 +224,8 @@ def trades_today() -> int:
 
 
 def execute_trade(run_id: int, symbol: str, side: str, shares: int, price: float, reason: str,
-                  meta: dict | None = None) -> dict:
+                  meta: dict | None = None, name: str | None = None, signals: str | None = None,
+                  proposed_at: str | None = None) -> dict:
     shares = int(shares)
     t = now()
     with conn() as c:
@@ -232,17 +255,18 @@ def execute_trade(run_id: int, symbol: str, side: str, shares: int, price: float
         c.execute("UPDATE simulation SET cash_balance=?, current_date=?, "
                   "inception_date=COALESCE(inception_date, ?) WHERE id=1",
                   (cash, t.date().isoformat(), t.date().isoformat()))
-        c.execute("INSERT INTO transactions (date, hour, action, symbol, shares, price, total, reason, run_id, cost) "
-                  "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        c.execute("INSERT INTO transactions (date, hour, action, symbol, shares, price, total, reason, run_id, cost, "
+                  "name, signals, proposed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                   (t.date().isoformat(), t.strftime("%H:%M:%S"), side, symbol, shares, round(price, 4),
-                   round(total, 2), reason, run_id, cost))
+                   round(total, 2), reason, run_id, cost, name, signals, proposed_at))
+        tid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
         if meta is not None and shares > 0:    # every executed trade is a call the committee will be graded on
             c.execute("INSERT INTO reflections (decided_at, run_id, ticker, action, entry_px, thesis, invalidation, "
                       "invalidation_px, horizon_days, entry_date, regime, sector, signals) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                       (_now(), run_id, symbol, side, price, meta.get("thesis", ""), meta.get("invalidation", ""),
                        meta.get("invalidation_px"), meta.get("horizon_days", 5), meta.get("entry_date"),
                        meta.get("regime"), meta.get("sector"), json.dumps(meta.get("signals", {}), default=str)))
-    return {"symbol": symbol, "side": side, "shares": shares, "price": price, "total": total}
+    return {"symbol": symbol, "side": side, "shares": shares, "price": price, "total": total, "id": tid}
 
 
 def record_snapshot(run_id: int | None, last_px: dict[str, float], benchmark_px: float) -> float:
@@ -305,20 +329,24 @@ def save_regime(raw: str, effective: str, note: str) -> None:
 
 
 # --------------------------------------------------------------- export --- #
+def set_trade_reason(trade_id: int, reason: str) -> None:
+    with conn() as c:
+        c.execute("UPDATE transactions SET reason=? WHERE id=?", (reason, trade_id))
+
+
 def export_trades_csv(path: str | None = None) -> str:
-    """Brief §10.4: sequential CSV of every trade. Brief format is
-    <date>,<hour>,<sale/buy>,<price>,<number of shares>,<total transaction>;
-    we add ticker (the brief omits it but positions can't be tracked without it) and reason."""
+    """Brief §10.4 sequential CSV of every trade. IPS E1 (Oct 20) columns: date, hour (Madrid), ticker, name,
+    side, price, shares, total, reason (plain English, E2), signals (scores, kept out of the reason)."""
     path = path or config.TRADES_CSV
     with conn() as c:
-        rows = c.execute("SELECT date, hour, symbol, action, price, shares, total, reason "
+        rows = c.execute("SELECT date, hour, symbol, name, action, price, shares, total, reason, signals "
                          "FROM transactions ORDER BY id").fetchall()
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["date", "hour", "ticker", "buy_sell", "price", "shares", "total", "reason"])
+        w.writerow(["date", "hour_madrid", "ticker", "name", "side", "price", "shares", "total", "reason", "signals"])
         for r in rows:
-            w.writerow([r["date"], r["hour"], r["symbol"], r["action"], f"{r['price']:.2f}",
-                        r["shares"], f"{r['total']:.2f}", r["reason"]])
+            w.writerow([r["date"], r["hour"], r["symbol"], r["name"] or "", r["action"], f"{r['price']:.2f}",
+                        r["shares"], f"{r['total']:.2f}", r["reason"], r["signals"] or ""])
     return path
 
 

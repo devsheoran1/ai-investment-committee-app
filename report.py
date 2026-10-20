@@ -15,6 +15,7 @@ import os
 import pandas as pd
 
 import config
+import data
 import database as db
 
 REPORT_DIR = os.getenv("FUND_REPORT_DIR", os.path.join(config.BASE_DIR, "reports"))
@@ -73,7 +74,7 @@ def forum_post(day: str | None = None) -> str:
              f"NAV ${nav:,.0f} | since inception {k.get('total_return', 0):+.2%} | SPY {k.get('spy_return', 0):+.2%}",
              ""]
     for r in h.itertuples():
-        lines.append(f"{r.ticker:<6} {int(r.shares):>6} sh  {r.weight:>5.1%}  P&L {r.pnl:+,.0f} ({r.pnl_pct:+.1%})")
+        lines.append(f"{data.label(r.ticker)[:34]:<34} {int(r.shares):>6} sh  {r.weight:>5.1%}  P&L {r.pnl:+,.0f} ({r.pnl_pct:+.1%})")
     lines.append(f"Cash ${db.get_cash():,.0f} ({db.get_cash() / nav:.1%})")
     return "\n".join(lines)
 
@@ -98,15 +99,17 @@ def daily_report(day: str | None = None) -> str:
     if t_day is None or t_day.empty:
         md += ["No trades today (a no-trade day is a valid decision; see the committee minutes).", ""]
     else:
-        md += ["| hour | side | ticker | shares | price | total | reason |", "|---|---|---|---|---|---|---|"]
+        md += ["| time (Madrid / ET) | side | name | shares | price | total | reason | signals |",
+               "|---|---|---|---|---|---|---|---|"]
         for r in t_day.itertuples():
-            md.append(f"| {r.hour} | {r.action} | {r.symbol} | {r.shares} | {r.price:,.2f} | {r.total:,.0f} | "
-                      f"{str(r.reason).replace('|', '/')} |")
+            when = db.madrid_et(f"{r.date}T{r.hour}").split(" ", 1)[-1]
+            md.append(f"| {when} | {r.action} | {data.label(r.symbol)} | {r.shares} | {r.price:,.2f} | {r.total:,.0f} | "
+                      f"{str(r.reason).replace('|', '/')} | {str(getattr(r, 'signals', '') or '').replace('|', '/')} |")
         md.append("")
 
     md += ["## Committee minutes", ""]
     for r in r_day.itertuples() if not r_day.empty else []:
-        md.append(f"**Run #{r.id}** ({r.started_at[11:16]}, {r.mode}, {r.status}): {r.summary or '—'}")
+        md.append(f"**Run #{r.id}** ({db.madrid_et(r.started_at)}, {r.mode}, {r.status}): {r.summary or '—'}")
         for m in db.get_messages(r.id):
             c = m["content"]
             if m["agent"] == "Macro Strategist":
@@ -134,7 +137,7 @@ def daily_report(day: str | None = None) -> str:
                   f"avg excess vs SPY {rec['avg_excess_ret']:+.2%}")
         md.append("")
         for r in refl[refl["eval_date"] == day].itertuples() if not refl.empty else []:
-            md.append(f"- **{r.ticker} {r.action}** ({r.verdict}, {r.excess_ret:+.1%} vs SPY): {r.lesson}")
+            md.append(f"- **{data.label(r.ticker)} {r.action}** ({r.verdict}, {r.excess_ret:+.1%} vs SPY): {r.lesson}")
         if refl.empty or refl[refl["eval_date"] == day].empty:
             md.append("No calls graded today; latest lessons:")
             for r in refl.head(3).itertuples():
@@ -150,7 +153,7 @@ def daily_report(day: str | None = None) -> str:
     else:
         md += ["| ticker | shares | avg cost | price | value | weight | P&L |", "|---|---|---|---|---|---|---|"]
         for r in h.itertuples():
-            md.append(f"| {r.ticker} | {int(r.shares)} | {r.avg_cost:,.2f} | {r.price:,.2f} | {r.value:,.0f} | "
+            md.append(f"| {data.label(r.ticker)} | {int(r.shares)} | {r.avg_cost:,.2f} | {r.price:,.2f} | {r.value:,.0f} | "
                       f"{r.weight:.1%} | {r.pnl:+,.0f} ({r.pnl_pct:+.1%}) |")
         md.append("")
 
@@ -209,7 +212,7 @@ def final_summary(path: str | None = None) -> str:
     for day, g in (trades.groupby("date", sort=False) if not trades.empty else []):
         doc.add_heading(day, 2)
         for r in g.itertuples():
-            doc.add_paragraph(f"{r.hour} {r.action} {r.shares} {r.symbol} @ ${r.price:,.2f} (${r.total:,.0f}) — {r.reason}",
+            doc.add_paragraph(f"{r.hour} Madrid · {r.action} {r.shares} {data.label(r.symbol)} @ ${r.price:,.2f} (${r.total:,.0f}) — {r.reason}",
                               style="List Bullet")
 
     doc.add_heading("Committee decisions", 1)

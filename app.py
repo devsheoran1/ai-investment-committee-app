@@ -188,7 +188,8 @@ def render_message(m: dict) -> None:
         elif a == "Trader":
             st.write(c.get("execution_notes", ""))
             if c.get("approved_orders"):
-                st.dataframe(pd.DataFrame(c["approved_orders"])[["ticker", "side", "shares", "price", "notional", "reason"]],
+                ao = pd.DataFrame(c["approved_orders"]); ao["name"] = ao["ticker"].map(data.label)
+                st.dataframe(ao[["name", "side", "shares", "price", "notional", "reason"]],
                              width="stretch", hide_index=True)
             if c.get("rejected"):
                 st.markdown("**Rejected:** " + "; ".join(f"{r['ticker']} ({r['reason']})" for r in c["rejected"]))
@@ -245,7 +246,7 @@ with tab_floor:
         default = st.session_state.get("selected_run", ids[0])
         r = runs.set_index("id")
         run_id = st.selectbox("Meeting", ids, index=ids.index(default) if default in ids else 0,
-                              format_func=lambda i: f"#{i} — {r.loc[i, 'started_at']} · {r.loc[i, 'mode']} · "
+                              format_func=lambda i: f"#{i} — {db.madrid_et(r.loc[i, 'started_at'])} · {r.loc[i, 'mode']} · "
                                                     f"{r.loc[i, 'status']} · {r.loc[i, 'provider']}")
         status_ = r.loc[run_id, "status"]
         if r.loc[run_id, "summary"]:
@@ -253,7 +254,10 @@ with tab_floor:
         prop = db.get_proposal(run_id)
         if status_ == "proposed" and prop:
             st.subheader("Proposed trades")
-            st.dataframe(pd.DataFrame(prop["orders"])[["ticker", "side", "shares", "price", "notional", "reason"]],
+            po = pd.DataFrame(prop["orders"]); po["name"] = po["ticker"].map(data.label)
+            st.caption(f"Proposed {db.madrid_et(r.loc[run_id, 'finished_at'])}. Executing reprices at the latest price; "
+                       f"proposals older than 2 h are refused.")
+            st.dataframe(po[["name", "side", "shares", "price", "notional", "reason"]],
                          width="stretch", hide_index=True)
             if st.button("✅ Execute Trades", type="primary"):
                 out = execute_run(run_id)
@@ -275,7 +279,7 @@ with tab_pf:
         for t, p in pos.items():
             px = last_px.get(t, p["avg_cost"])
             mv = p["shares"] * px
-            rows.append({"Symbol": t, "Sector": sector_of.get(t, "?"), "Shares": p["shares"],
+            rows.append({"Symbol": data.label(t), "Sector": sector_of.get(t, "?"), "Shares": p["shares"],
                          "Avg cost": p["avg_cost"], "Price": px, "Market Value": mv, "Weight": mv / nav,
                          "P/L": p["shares"] * (px - p["avg_cost"]), "P/L %": px / p["avg_cost"] - 1})
         df = pd.DataFrame(rows).sort_values("Weight", ascending=False)
@@ -350,7 +354,8 @@ with tab_trades:
     else:
         for day, g in trades.groupby("date", sort=False):
             with st.expander(f"{day} — {len(g)} trade(s)", expanded=day == trades["date"].iloc[0]):
-                st.dataframe(g[["hour", "action", "symbol", "shares", "price", "total", "reason"]],
+                g = g.assign(name=g["symbol"].map(data.label)).rename(columns={"hour": "hour (Madrid)"})
+                st.dataframe(g[["hour (Madrid)", "action", "name", "shares", "price", "total", "reason", "signals"]],
                              width="stretch", hide_index=True)
     with st.expander("📣 Today's forum post (17:00–18:00 Madrid) and reports"):
         st.code(report.forum_post(), language=None)
