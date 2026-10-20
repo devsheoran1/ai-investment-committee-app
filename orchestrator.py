@@ -420,6 +420,8 @@ if __name__ == "__main__":
         data.get_market_data(data.get_universe()["symbol"].tolist())
         db.use_synthetic(data.is_synthetic())
         db.init_db(reset=True)
+        print(f"Fund reset to ${config.STARTING_CAPITAL:,.0f} cash in {db.current_db_name()}. No committee run.")
+        raise SystemExit
     if args.snapshot:
         print(f"NAV ${snapshot_only():,.0f}")
         raise SystemExit

@@ -43,12 +43,35 @@ cd ~/Downloads/ai_investment_committee
 | §11 | Summary of the 15-day run (Word doc) | ✅ | `python report.py --final` → `reports/final_summary.docx` |
 | §11 | Class presentation | ⏳ | |
 
+## Prof. Manero's answers (Oct 20) — rules
+1. Init day may exceed 5 trades; the cap applies from day 2 (C1 resolved).
+2. S&P 500 incl. Nasdaq listings is fine (C2 resolved).
+3. Leveraged longs (30% total / 15% each) and inverse hedges (25%, risk-off only) are allowed **provided the constraints
+   are enforced by our Risk Manager agent**: the hard-limit check is called from `committee/risk_manager.py` and appears
+   as the Risk Manager's verdict in the transcript and report.
+4. Transaction costs = 0 (A20).
+5. Runs are manual: no schedulers or daemons, only the button and the CLI.
+
+## Dry run Oct 19–20 (archived: `archive/dry_run_2026-10-19_20/`, presentation material)
+The first live-style book, built under the old rules, then archived and the live fund reset to $1M on Oct 20 (no init;
+live init is Oct 22 14:30 Madrid). 7 runs, 20 trades (17 buys / 3 sells). What broke and why:
+- **Book drifted to 12 → toward 9 names and 8.3% cash** (limit then 5%, now 3%): limits were checked on the target book,
+  then the 5-trade cap and $25k minimum trimmed it and the executable book was never re-checked. → Stage 1.
+- **Sentiment scored S 0.0 on all 20 trades**: the agent answered "no material news" for ~90% of names and `validate()`
+  turned "no headlines" into 0.0 too. → Stage 2.
+- **Quant scored Q 0.0 on 9 of 20 trades** (gpt-oss-20b laziness). → Stage 4.
+- **One PM note pasted on every trade**, mentioning FAS, which never traded. → Stage 3.
+- **Timestamps mixed**: the report showed the run at 08:14 and its trades at 13:34. → Stage 3 (all Madrid time).
+- **Runs 4–7 crashed with `KeyError: 'ABNB'`**: Yahoo returned only 382/513 tickers, the big-gap retry never fired, and a
+  held name without a price crashed `plan_orders` (and would have dropped out of NAV). → fixed in Stage 1.
+- `orchestrator.py --reset` used to continue into a committee run (= an init). Now it only resets.
+
 ## Conflicts and how we resolved them
 
 | # | Conflict | Resolution |
 |---|---|---|
-| C1 | Brief: 5 trades/day vs initialisation needs 10–20 buys | Init day exempt (IPS D1). **Confirm with Prof. Manero.** |
-| C2 | Brief §1 "NYSE shares" vs §10.3 "stocks and leveraged ETFs" vs our S&P 500 | S&P 500 (includes Nasdaq listings) + US leveraged ETFs. Worth a one-line check with the professor |
+| C1 | Brief: 5 trades/day vs initialisation needs 10–20 buys | ✅ RESOLVED Oct 20: Prof. Manero confirmed the init day may exceed 5 trades; the cap applies from day 2. |
+| C2 | Brief §1 "NYSE shares" vs §10.3 "stocks and leveraged ETFs" vs our S&P 500 | ✅ RESOLVED Oct 20: Prof. Manero confirmed the S&P 500 incl. Nasdaq listings is fine. |
 | C3 | Brief mega-prompt: 40% max position, 2 trades/day, $10k, 1 week, 10 ETFs from CSV | That section is the generic template. Competition rules (§10) and §1 win: $1M, 5 trades, 20% (IPS A8, stricter than 40%) |
 | C4 | Brief §2 `finance.db` vs §8.1 `finance_game.db` | `finance.db` |
 | C5 | Brief CSV format has no ticker column | Added `ticker` and `reason`: positions can't be tracked without them |
