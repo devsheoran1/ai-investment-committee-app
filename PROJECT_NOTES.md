@@ -225,6 +225,18 @@ live init is Oct 22 14:30 Madrid). 7 runs, 20 trades (17 buys / 3 sells). What b
   (`messages` columns, auto-migrated) → "what this agent saw" for the dashboard and the presentation.
 - Tests: `tests/test_closeout.py`.
 
+## Stage 8 results (Oct 20–21)
+- **20-day replay** (`--replay 20`, mock agents, prices only, no news): Sep 23 → Oct 20, **−3.71% vs SPY −0.56% (−315 bps)**,
+  max drawdown −5.53%, 51 trades, committee hit rate 47% on 41 graded calls (15 right / 17 wrong / 9 flat). Ran 53 min, 0 errors.
+  Mock agents = rule-based scores, so this tests the mechanics (limits, floor, cap, reflection, attribution), not the LLMs.
+- **Real Groq run** on `/tmp/test.db`: init 382 s, 10 calls, ~34.6K tokens, 9 rate-limit (429) waits, 14 trades; daily 566 s,
+  8 calls, ~27.8K tokens, 4 waits, 3 trades. **Sentiment failed both times with 413 "request too large"** (43 names × 10
+  headlines + brief > Groq's 8K tokens/min request size). Fixed: batches sized on the whole request (≤ 14K chars), 6 headlines
+  per name to the LLM. Re-tested on Groq: 8 batches, 34/43 names scored, 9 n/a (no news), 194 s, 8 waits.
+- **Runs exceed 4 minutes on the Groq free tier** (the spec's threshold). Proposed fallback, NOT switched on (needs Dev's OK):
+  set `config.JUNIOR_GEMINI_FALLBACK = True` (junior agents move to `gemini-3.5-flash-lite` after 3 Groq 429s), or route
+  Sentiment straight to Gemini Flash (its batches are the biggest token user).
+
 ## Conflicts and how we resolved them
 
 | # | Conflict | Resolution |

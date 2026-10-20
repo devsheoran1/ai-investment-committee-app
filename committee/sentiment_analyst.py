@@ -13,7 +13,7 @@ POS = ("beat", "surge", "record", "upgrade", "raises", "growth", "strong", "rall
 NEG = ("miss", "falls", "cut", "downgrade", "lawsuit", "probe", "weak", "plunge", "recall", "slump", "fine")
 LAZY_SHARE = 0.70
 MAX_HEADS_TO_LLM = 6          # FinBERT scores all 10; the LLM reads the 6 newest (Groq 8K tokens/min request size)
-CHUNK_CHARS = 12000           # ~3K tokens of headlines per call; bigger shortlists are split into several calls
+MAX_REQUEST_CHARS = 14000     # ~3.5K input tokens; Groq counts input + max_tokens (3000) against 8K/min
 
 
 class SentimentAnalyst(Agent):
@@ -68,15 +68,16 @@ If a ticker's headlines are all noise, score it 0 and say "noise only". Tickers 
 
     def run(self, ctx, llm):
         """Batches the names so no single request exceeds Groq's request-size limit (Oct 20: 413 on 43 names)."""
-        rows = self._rows(ctx)
-        chunks, cur, size = [], [], 0
-        for t in ctx["tickers"]:
-            n = len(compact(rows.get(t, [])))
-            if cur and size + n > CHUNK_CHARS:
-                chunks.append(cur); cur, size = [], 0
-            cur.append(t); size += n
-        if cur:
-            chunks.append(cur)
+        def size(ticks):            # the WHOLE request: system prompt + brief + headlines + earnings context
+            c = {**ctx, "tickers": ticks}
+            return len(self.system_prompt) + len(self.build_prompt(c)) + min(900, len(ctx.get("morning_brief") or ""))
+        chunks, todo = [], [list(ctx["tickers"])]
+        while todo:
+            ch = todo.pop(0)
+            if len(ch) > 1 and size(ch) > MAX_REQUEST_CHARS:
+                todo[:0] = [ch[:len(ch) // 2], ch[len(ch) // 2:]]
+            else:
+                chunks.append(ch)
         if len(chunks) <= 1:
             return self._run_one(ctx, llm)
         merged, moods, models = {}, [], []
