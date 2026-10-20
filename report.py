@@ -9,6 +9,7 @@ Terminal:  python report.py [--day YYYY-MM-DD] [--final]
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 
@@ -63,6 +64,37 @@ def _holdings_table(px: dict[str, float], nav: float) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("weight", ascending=False) if rows else pd.DataFrame()
 
 
+def _day_messages(day: str) -> dict:
+    """Messages of the day's last committee run, keyed by agent (and stage for the PM)."""
+    runs = db.get_runs()
+    if runs.empty:
+        return {}
+    r = runs[(runs["started_at"].str[:10] == day) & (runs["mode"] != "recheck")].sort_values("id")
+    if r.empty:
+        return {}
+    out = {}
+    for m in db.get_messages(int(r.iloc[-1]["id"])):
+        key = m["agent"] if m["agent"] != "Portfolio Manager" else f"PM:{m['stage']}"
+        out[key] = m
+        if m["agent"] == "Risk Manager":
+            out["Risk Manager:last"] = m
+        out.setdefault("_all", []).append(m)
+    return out
+
+
+def attribution_result():
+    """Brinson-Fachler vs SPY for the current fund; None until there are two snapshots after the first trade."""
+    try:
+        import attribution
+        u = data.get_universe()
+        close = data.get_market_data(u["symbol"].tolist())["close"]
+        return attribution.run(close, data.sector_etf_close(), dict(zip(u["symbol"], u["sector"])),
+                               dict(zip(u["symbol"], u["asset_type"])), db.get_trades(), db.get_snapshots(),
+                               db.get_reflections())
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def forum_post(day: str | None = None) -> str:
     """IPS E4: ticker · shares · weight · P&L, plus NAV and return since inception."""
     day = day or db.today()
@@ -76,6 +108,24 @@ def forum_post(day: str | None = None) -> str:
     for r in h.itertuples():
         lines.append(f"{data.label(r.ticker)[:34]:<34} {int(r.shares):>6} sh  {r.weight:>5.1%}  P&L {r.pnl:+,.0f} ({r.pnl_pct:+.1%})")
     lines.append(f"Cash ${db.get_cash():,.0f} ({db.get_cash() / nav:.1%})")
+    # IPS E4 (Oct 20): + 3 lines
+    tr = db.get_trades()
+    t_day = tr[tr["date"] == day] if not tr.empty else tr
+    if t_day is None or t_day.empty:
+        l1 = "Today: no trades (nothing cleared the bar; doing nothing is a valid decision)."
+    else:
+        bits = [f"{'bought' if r.action == 'BUY' else 'sold'} {data.label(r.symbol).split(' · ')[-1]}" for r in t_day.itertuples()]
+        first = str(t_day.iloc[0]["reason"]).split(". ")[0][:140]
+        l1 = f"Today: {', '.join(bits)}. Lead reason: {first}."
+    l2 = (f"Return since inception {k.get('total_return', 0):+.2%} vs SPY {k.get('spy_return', 0):+.2%} "
+          f"({(k.get('total_return', 0) - k.get('spy_return', 0)) * 1e4:+.0f} bps).")
+    msgs = _day_messages(day)
+    brief = (msgs.get("Morning Brief") or {}).get("content") or {}
+    import morning_brief
+    nxt = [f"{e['date'][5:]} {e['event'].split(',')[0]}" for e in morning_brief.macro_events(dt.date.fromisoformat(day), 5)]
+    watch = list(brief.get("tickers_in_play") or [])[:4]
+    l3 = "Tomorrow's watch list: " + "; ".join(([", ".join(watch)] if watch else []) + nxt[:2] or ["no scheduled catalysts"]) + "."
+    lines += ["", l1, l2, l3]
     return "\n".join(lines)
 
 
@@ -157,6 +207,51 @@ def daily_report(day: str | None = None) -> str:
         md.append("No calls graded yet (the first become due 5 trading days after the first trades).")
     md.append("")
 
+    msgs = _day_messages(day)
+    brief = (msgs.get("Morning Brief") or {}).get("content") or {}
+    if brief.get("text"):
+        md += ["## Morning Brief", "", f"*{brief.get('model', '')}*", "", brief["text"], "",
+               f"Tickers in play: {', '.join(brief.get('tickers_in_play') or []) or '—'}", ""]
+    da = (msgs.get("Devil's Advocate") or {}).get("content") or {}
+    if da.get("objections"):
+        ans = ((msgs.get("PM:proposal_answers_da") or {}).get("content") or {}).get("da_responses") or {}
+        md += ["## Devil's Advocate vs the PM", "", "| idea | bear case | evidence | DA verdict | PM answer |", "|---|---|---|---|---|"]
+        for t, o in da["objections"].items():
+            md.append(f"| {data.label(t)} | {o['bear_case']} | {o['evidence']} | {o['verdict']} | {ans.get(t, '—')} |")
+        md.append("")
+    sent = ((msgs.get("Sentiment Analyst") or {}).get("content") or {}).get("sentiment") or {}
+    held = list(db.get_positions())
+    if sent and held:
+        md += ["## Top headlines on held names", ""]
+        for t in held:
+            v = sent.get(t) or {}
+            if v.get("based_on") or v.get("key_driver"):
+                sc = "n/a" if v.get("score") is None else f"{v['score']:+.2f}"
+                md.append(f"- **{data.label(t)}** (S {sc}, FinBERT {v.get('finbert')}): {v.get('key_driver', '')}")
+                for h_ in (v.get("based_on") or [])[:2]:
+                    md.append(f"  - {h_}")
+        md.append("")
+    risk = (msgs.get("Risk Manager:last") or {}).get("content") or {}
+    if risk.get("limit_checks"):
+        md += ["## Risk Manager: hard-limit checks (post-trade book)", "",
+               f"Verdict: **{risk.get('decision', '').upper()}**" + (f" · override: {risk['override']}" if risk.get("override") else ""),
+               "", "| rule | value | limit | kind | result |", "|---|---|---|---|---|"]
+        for c in risk["limit_checks"]:
+            md.append(f"| {c['rule']} | {c['value']} | {c['limit']} | {c['kind']} | {'✅' if c['status'] == 'pass' else '❌'} |")
+        for w_ in risk.get("warnings", []):
+            md.append(f"- warning: {w_}")
+        md.append("")
+    fails = [m for m in msgs.get("_all", []) if str(m.get("model", "")).startswith("FAILED")]
+    md += ["## Agent failures (D11)", ""] + ([f"- {m['agent']} ({m['stage']}): {m['model']}" for m in fails] or ["None today."]) + [""]
+    att = attribution_result()
+    if att:
+        md += ["## Performance attribution vs SPY (Brinson-Fachler, Carino-linked)", "", att["line"],
+               f"(holdings-based; execution/timing vs NAV {att['cumulative']['execution_timing']:+.2%}; "
+               f"SPY sector weights as of {att['spy_weights_asof']})", ""]
+        if att.get("by_agent"):
+            md.append("Selection by driving agent: " + ", ".join(f"{a} {v:+.2%}" for a, v in att["by_agent"].items()))
+            md.append("")
+
     h = _holdings_table(_last_prices(day), nav)
     md += ["## Holdings", ""]
     if h.empty:
@@ -204,6 +299,72 @@ def final_summary(path: str | None = None) -> str:
     else:
         doc.add_paragraph("No snapshots recorded yet.")
 
+    from docx.shared import Inches
+    import tempfile
+    charts = _charts(snaps)
+    if charts.get("nav"):
+        doc.add_heading("NAV vs SPY", 1)
+        doc.add_picture(charts["nav"], width=Inches(6.2))
+
+    att = attribution_result()
+    doc.add_heading("Performance attribution vs SPY", 1)
+    if att:
+        doc.add_paragraph(att["line"])
+        p_ = att["cumulative"]["parts"]
+        doc.add_paragraph(f"Brinson-Fachler on daily holdings, linked with Carino smoothing (parts sum to the total). "
+                          f"Execution/timing vs the NAV return: {att['cumulative']['execution_timing']:+.2%}. "
+                          f"SPY sector weights as of {att['spy_weights_asof']}.")
+        wf = _waterfall(p_)
+        if wf:
+            doc.add_picture(wf, width=Inches(6.0))
+        if att.get("by_agent"):
+            doc.add_paragraph("Stock picking by the agent that drove each position: " +
+                              ", ".join(f"{a} {v:+.2%}" for a, v in att["by_agent"].items()))
+    else:
+        doc.add_paragraph("Not enough history yet (needs two snapshots after the first trade).")
+
+    doc.add_heading("Graded calls (reflection memory)", 1)
+    import reflection
+    rec = reflection.track_record()
+    refl = db.get_reflections(evaluated_only=True)
+    if rec.get("calls"):
+        doc.add_paragraph(f"{rec['calls']} calls graded vs SPY over 5 trading days: hit rate {rec['hit_rate']}, "
+                          f"average excess {rec['avg_excess_ret']:+.2%}.")
+        for r in refl.head(30).itertuples():
+            doc.add_paragraph(f"{data.label(r.ticker)} {r.action} ({r.verdict}, {r.excess_ret:+.1%} vs SPY): {r.lesson}",
+                              style="List Bullet")
+    else:
+        doc.add_paragraph("No calls graded yet.")
+
+    doc.add_heading("Model horse race (latest)", 1)
+    hr = _latest_horse_race()
+    if hr:
+        doc.add_paragraph(hr.get("scoreboard_line", ""))
+    doc.add_paragraph("Short-horizon returns are close to unpredictable: a model only gets weight if it beats the "
+                      "always-up baseline, clears 52% and has an IC t-stat of at least 1 (IPS C3.4).")
+
+    doc.add_heading("What worked / what didn't", 1)
+    if att and att["cumulative"].get("per_name"):
+        pn = sorted(att["cumulative"]["per_name"].items(), key=lambda kv: kv[1])
+        doc.add_paragraph("Best stock picks (selection vs sector): " +
+                          ", ".join(f"{data.label(t)} {v:+.2%}" for t, v in pn[::-1][:3]))
+        doc.add_paragraph("Worst stock picks: " + ", ".join(f"{data.label(t)} {v:+.2%}" for t, v in pn[:3]))
+    p_ = (att or {}).get("cumulative", {}).get("parts", {})
+    if p_:
+        best = max(p_, key=p_.get); worst = min(p_, key=p_.get)
+        doc.add_paragraph(f"Largest positive driver: {best.replace('_', ' ')} ({p_[best]:+.2%}); "
+                          f"largest drag: {worst.replace('_', ' ')} ({p_[worst]:+.2%}).")
+
+    doc.add_heading("Limitations", 1)
+    for lim in ("15 trading days is mostly noise: treat P&L as anecdotal, not as evidence of skill.",
+                "Free data only: yfinance prices (~15 min delayed), Yahoo/Google News RSS and SEC 8-K headlines; "
+                "no Bloomberg/FactSet consensus.",
+                "The 20-day replay runs on prices only with fundamentals frozen at today's snapshot (small look-ahead), "
+                "no historical news (Sentiment n/a) and today's S&P 500 constituents (survivorship bias).",
+                "LLM agents can be inconsistent run to run; hard limits are enforced in Python, not by the models.",
+                "Attribution uses SPY sector weights from one snapshot and SPDR sector ETFs as sector benchmarks."):
+        doc.add_paragraph(lim, style="List Bullet")
+
     doc.add_heading("Daily evolution", 1)
     if not snaps.empty:
         t = doc.add_table(rows=1, cols=5)
@@ -233,6 +394,59 @@ def final_summary(path: str | None = None) -> str:
             doc.add_paragraph(f"#{r.id} {r.started_at[:16]} ({r.mode}, {r.status}): {r.summary}")
     doc.save(path)
     return path
+
+
+def _charts(snaps: pd.DataFrame) -> dict:
+    if snaps is None or len(snaps) < 2:
+        return {}
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        s_ = snaps.copy()
+        s_["date"] = pd.to_datetime(s_["date"])
+        fig, ax = plt.subplots(figsize=(8, 3.2), dpi=150)
+        ax.plot(s_["date"], s_["total_equity"] / config.STARTING_CAPITAL * 100, color="#1F4E9C", lw=2, label="Fund")
+        ax.plot(s_["date"], s_["benchmark_px"] / s_["benchmark_px"].iloc[0] * 100, color="#9DB9E3", lw=2, ls="--", label="SPY")
+        ax.set_ylabel("rebased to 100"); ax.legend(frameon=False); ax.grid(alpha=0.2)
+        fig.autofmt_xdate(); fig.tight_layout()
+        path = os.path.join(REPORT_DIR, "nav_vs_spy.png"); fig.savefig(path); plt.close(fig)
+        return {"nav": path}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _waterfall(parts: dict) -> str | None:
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        labels = {"sector_calls": "Sector calls", "benchmark_tracking": "SPY vs sector ETFs", "stock_picking": "Selection",
+                  "leverage_beta": "Leverage beta", "leverage_decay": "Leverage decay", "cash_drag": "Cash drag"}
+        keys = [k for k in labels if k in parts]
+        vals = [parts[k] * 100 for k in keys]
+        cum = 0.0
+        fig, ax = plt.subplots(figsize=(8, 3), dpi=150)
+        for i, (k, v) in enumerate(zip(keys, vals)):
+            ax.bar(i, v, bottom=cum if v >= 0 else cum + v, color="#2E8B57" if v >= 0 else "#C0392B")
+            cum += v
+        ax.bar(len(keys), cum, color="#1F4E9C")
+        ax.set_xticks(range(len(keys) + 1), [labels[k] for k in keys] + ["Total vs SPY"], rotation=20, fontsize=8)
+        ax.set_ylabel("% excess return"); ax.axhline(0, color="black", lw=0.6); ax.grid(axis="y", alpha=0.2)
+        fig.tight_layout()
+        path = os.path.join(REPORT_DIR, "attribution_waterfall.png"); fig.savefig(path); plt.close(fig)
+        return path
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _latest_horse_race() -> dict | None:
+    runs = db.get_runs()
+    for rid in runs["id"].tolist() if not runs.empty else []:
+        for m in db.get_messages(int(rid)):
+            if m["agent"] == "System" and "scoreboard" in m["content"]:
+                return m["content"]
+    return None
 
 
 if __name__ == "__main__":

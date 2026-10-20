@@ -179,6 +179,42 @@ live init is Oct 22 14:30 Madrid). 7 runs, 20 trades (17 buys / 3 sells). What b
 - Cost: cold first run of the day ~112 s in mock (3y download + walk-forward + 20 Kronos origins), cached runs ~3–30 s.
 - Tests: `tests/test_quant_models.py`.
 
+## Stage 6 (Oct 20): Part D operations + 20-day replay (D1–D13)
+- Verified and tested: D10 pre-flight (missing / non-positive / > 20% jump excluded; 3x ETFs allowed 20% × leverage),
+  D11 (an agent that raises = no signal, logged in `failed_agents`, run continues), D12 (2+ of the 4 signal agents silent →
+  "Insufficient information", no new trades, forced exits still go), C8.5 (no live price → untradeable, valued at last
+  close), C8.6 (> 20% NAV jump vs last snapshot → Trader halts).
+- **Replay**: `python orchestrator.py --replay 20 [--provider mock|groq]` → `finance_replay.db`, `trades_replay.csv`,
+  `reports/replay/` (+ `summary.json`). Never touches `finance.db`. Day d decides on prices up to the **previous close**
+  and fills at d's **open**, stamped 15:30 Madrid (D8). Models retrained walk-forward on each day's data (lighter LSTM:
+  120-day walk-forward, retrain every 30 days). Fundamentals = today's snapshot, frozen (D7, small look-ahead, stated in
+  the summary); estimate revisions dropped; earnings history cut at d; Sentiment n/a (no historical news, weight
+  redistributed); no Morning Brief; Kronos skipped (too slow per day). Reflection grading runs inside the replay.
+  Known bias: today's S&P 500 constituents (survivorship). Dashboard: "Fund: Live / Replay" toggle (replay is read-only).
+- Reflection entry date is now the **execution** date (was the data date), so a 5-day call is measured from the fill.
+- Test proving no look-ahead: run a replay day, multiply every price on/after d by 3 with model caches bypassed, assert
+  identical orders. `tests/test_operations.py`.
+
+## Stage 7 (Oct 20): reporting (E3–E6) + performance attribution
+- **Daily report** adds: Morning Brief, Devil's Advocate objections next to the PM's answers, top headlines per held name
+  (source, FinBERT, LLM score), the Risk Manager's hard-limit pass/fail table on the post-trade book (+ warnings and any
+  override), agent failures (D11), the horse-race table, lessons learned, and the attribution line.
+- **Forum post (E4)**: holdings with names + 3 lines: today's trades and the lead reason, return vs SPY in bps,
+  tomorrow's watch list (Morning Brief tickers in play + macro releases in the next 5 days).
+- **Final Word report (E5)**: NAV vs SPY chart, KPIs, attribution with a waterfall chart, graded reflection calls, the
+  latest horse race, best/worst picks and largest driver/drag, limitations, daily evolution, every trade with its reason.
+- **Dashboard (E6)**: beta (post-trade book), cash %, leveraged %, days per regime, committee hit rate, attribution waterfall.
+- **Attribution** (`attribution.py`): daily Brinson-Fachler vs SPY on start-of-day holdings, SPDR sector ETFs as sector
+  benchmarks and SPY sector weights (yfinance, Morningstar sectors mapped to GICS, cached with as-of date). Parts: sector
+  calls (allocation), stock picking (selection incl. interaction), leverage sleeve split into beta (leverage × underlying)
+  and decay/tracking, cash drag, plus "SPY vs sector ETFs" tracking so the parts sum exactly. Linked over days with
+  Carino smoothing. The gap to the NAV return (fills at execution prices) is shown as execution/timing. Selection is also
+  attributed to the agent whose weighted score drove each position at entry. Test: parts sum to the total within 1 bp.
+- Runtime fix found while testing the replay: the LSTM trains **2.5× faster on CPU than on MPS** on the M2 (12 s vs 30 s per
+  fit), so `config.LSTM_DEVICE` defaults to cpu; replay uses a 60-day walk-forward per day. One replay day ≈ 1 min in mock.
+- Fixed: on the init day every buy was labelled a "replacement to keep 10 holdings" (replenish rule now daily runs only).
+- Tests: `tests/test_attribution.py`.
+
 ## Conflicts and how we resolved them
 
 | # | Conflict | Resolution |

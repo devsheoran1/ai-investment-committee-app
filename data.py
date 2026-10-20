@@ -574,7 +574,7 @@ def _fetch_earnings(ticker: str) -> dict:
     return out
 
 
-def get_earnings(tickers: list[str]) -> dict[str, dict]:
+def get_earnings(tickers: list[str], asof=None) -> dict[str, dict]:
     """Per stock: next report date (+ trading days to it, reports_soon flag), last 4 quarters' EPS est/actual/surprise,
     30-day EPS-estimate revisions (current quarter, next year), recommendation trend. Cached daily."""
     if is_synthetic() or not tickers:
@@ -584,10 +584,14 @@ def get_earnings(tickers: list[str]) -> dict[str, dict]:
         with ThreadPoolExecutor(max_workers=6) as ex:
             return dict(zip(tickers, ex.map(_fetch_earnings, tickers)))
     raw = _cached(_key("earnings", tickers), fetch_all, keep_if=lambda v: sum(bool(x) for x in v.values()) >= 0.3 * max(1, len(v)))
-    today = pd.Timestamp.today().normalize()
+    today = pd.Timestamp(asof).normalize() if asof is not None else pd.Timestamp.today().normalize()
     out = {}
     for t in tickers:
         d = dict(raw.get(t) or {})
+        if asof is not None:              # replay: only reports known by then; estimate revisions are today's -> drop
+            hist = [r for r in d.get("last4", []) if pd.Timestamp(r["date"]) < today]
+            fut = [r["date"] for r in (raw.get(t) or {}).get("last4", []) if pd.Timestamp(r["date"]) >= today]
+            d = {"last4": hist, **({"next_date": min(fut)} if fut else {})}
         if d.get("next_date"):
             n = len(pd.bdate_range(today, pd.Timestamp(d["next_date"]))) - 1
             d["trading_days_to_report"] = n
@@ -607,13 +611,22 @@ def _pct(s: pd.Series, n: int) -> float:
     return round(float(s.iloc[-1] / s.iloc[-1 - n] - 1) * 100, 2) if len(s) > n else 0.0
 
 
-def get_macro() -> dict:
+def sector_etf_close() -> pd.DataFrame:
+    """Close prices of the 11 SPDR sector ETFs (+ SPY), same cache as get_macro. For attribution."""
+    sym = MACRO_SYMBOLS + [config.BENCHMARK] + list(SECTOR_ETFS.values())
+    px = _cached("macro_px_v2", lambda: _download(sym, "2y")["close"])
+    return px[[c for c in list(SECTOR_ETFS.values()) + [config.BENCHMARK] if c in px.columns]]
+
+
+def get_macro(asof=None) -> dict:
     sym = MACRO_SYMBOLS + [config.BENCHMARK] + list(SECTOR_ETFS.values())
     synthetic = False
     try:
         if is_synthetic():
             raise RuntimeError("synthetic day")
-        px = _cached("macro_px_v2", lambda: _download(sym, "1y")["close"], max_age_min=60)
+        px = _cached("macro_px_v2", lambda: _download(sym, "2y")["close"], max_age_min=60)
+        if asof is not None:              # replay: only data strictly before the decision day
+            px = px[px.index < pd.Timestamp(asof)]
     except Exception:  # noqa: BLE001
         px = _synthetic_prices(sym, days=252, seed=11)
         px["^VIX"] = 15 + (px["^VIX"] / px["^VIX"].iloc[0] - 1) * 40

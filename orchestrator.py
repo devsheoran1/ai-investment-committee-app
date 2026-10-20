@@ -17,7 +17,11 @@ Terminal:  python orchestrator.py [--provider mock] [--execute] [--reset] [--sna
 """
 from __future__ import annotations
 
+import json
 import math
+import os
+
+import pandas as pd
 
 import analytics
 import config
@@ -69,7 +73,10 @@ def _preflight(close, tickers) -> dict[str, str]:
 
 
 def run_committee(provider: str | None = None, progress=None, execute: bool = False,
-                  extra_forced: dict | None = None, _skip_run_limit: bool = False) -> dict:
+                  extra_forced: dict | None = None, _skip_run_limit: bool = False, asof=None) -> dict:
+    """asof (replay, IPS D6-D9): decide on data strictly BEFORE that date (previous close); news/brief n/a,
+    fundamentals frozen (today's snapshot), estimate revisions dropped, Kronos skipped, lighter LSTM walk-forward."""
+    replay = asof is not None
     emit = progress or (lambda stage, msg: print(f"[{stage}] {msg}"))
     llm = LLMClient(provider)
 
@@ -77,11 +84,14 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
     emit("data", "Loading S&P 500 universe + leveraged ETFs and downloading prices")
     universe = data.get_universe()
     market = data.get_market_data(universe["symbol"].tolist())
+    if replay:
+        cut = pd.Timestamp(asof)
+        market = {k: v[v.index < cut] for k, v in market.items()}
     synthetic = data.is_synthetic()
     db.use_synthetic(synthetic)
     db.init_db()
     db.mark_stale_runs()
-    if not synthetic and llm.provider != "mock" and not _skip_run_limit and db.runs_today() >= config.MAX_RUNS_PER_DAY:
+    if not synthetic and llm.provider != "mock" and not _skip_run_limit and not replay and db.runs_today() >= config.MAX_RUNS_PER_DAY:
         raise RunLimitError(f"Already {db.runs_today()} runs today; the brief allows {config.MAX_RUNS_PER_DAY}.")
     if synthetic:
         emit("data", "⚠️ Yahoo unreachable — using SYNTHETIC prices in a separate sandbox fund")
@@ -95,7 +105,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
     mode = "init" if init_mode else "daily"
 
     # ------------------------------------------------------- 2. regime ------- #
-    macro = data.get_macro()
+    macro = data.get_macro(asof)
     reg = analytics.macro_regime(macro)
     prev_eff, prev_raw = db.previous_regime()
     regime, regime_note = analytics.apply_hysteresis(reg["raw_regime"], prev_eff, prev_raw)
@@ -106,7 +116,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
     # ------------------------------------------------------- screening ------- #
     def stage2_inputs(top):   # B9 Stage 2: revisions + post-earnings drift, quality (fetched for the top 60 only)
         import numpy as _np
-        earn = data.get_earnings(top)
+        earn = data.get_earnings(top, asof=asof)
         fund = data.get_fundamentals(top, sectors)
         drift = analytics.pead(earn, close)
         out = {}
@@ -153,12 +163,16 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
     flags = data.research_flags(fundamentals)
     names = dict(zip(universe["symbol"], universe["name"]))
     ciks = dict(zip(universe["symbol"], universe["cik"]))
-    news = finbert.score_news(data.get_news(shortlist, names, ciks))
+    # D7: no historical news exists, so in replay Sentiment is n/a and its 30% weight is redistributed (C5.2)
+    news = {t: [] for t in shortlist} if replay else finbert.score_news(data.get_news(shortlist, names, ciks))
     earn_names = sorted({t for t in shortlist + holdings if asset_types.get(t) == "stock"})
-    earnings = data.get_earnings(earn_names)
+    earnings = data.get_earnings(earn_names, asof=asof)
     pead = analytics.pead(earnings, close)
-    emit("brief", "Writing the Morning Brief")
-    brief = morning_brief.build({t: news.get(t, []) for t in holdings}, earnings, holdings, llm.provider)
+    if replay:
+        brief = {"text": "", "model": "replay: no Morning Brief (no historical headlines)", "tickers_in_play": []}
+    else:
+        emit("brief", "Writing the Morning Brief")
+        brief = morning_brief.build({t: news.get(t, []) for t in holdings}, earnings, holdings, llm.provider)
     tech = analytics.technicals(close, shortlist)
 
     emit("model", f"Training the LSTM on {len(shortlist)} shortlisted names")
@@ -166,16 +180,17 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
     px_fc = close[fc_cols].ffill().dropna()
     day = px_fc.index[-1].date()
     # C3.5 monthly walk-forward LSTM: ~1 min on the M2, so cached per data date (3 runs/day reuse it)
-    fc = data._cached(data._key(f"lstm_wf_{day}", shortlist),
-                      lambda: forecaster.forecast(px_fc, shortlist, market.get("volume")))
+    wf = (config.REPLAY["lstm_wf_days"], config.REPLAY["lstm_retrain_every"]) if replay else (forecaster.WF_DAYS, forecaster.RETRAIN_EVERY)
+    fc = data._cached(data._key(f"lstm_wf_{day}_{wf[0]}", shortlist),
+                      lambda: forecaster.forecast(px_fc, shortlist, market.get("volume"), wf_days=wf[0], retrain_every=wf[1]))
 
     race, race_sec = None, 0.0
     try:   # Kronos + horse race: optional, any failure = LSTM-only (never crashes the run)
         import time as _t
         t0 = _t.time()
         mk = {f: v[[c for c in fc_cols if c in v.columns]] for f, v in market.items()}
-        kr = data._cached(data._key(f"kronos_{day}", shortlist),
-                          lambda: kronos_fc.forecast(mk, shortlist) or {}, keep_if=bool)
+        kr = {} if replay else data._cached(data._key(f"kronos_{day}", shortlist),
+                                            lambda: kronos_fc.forecast(mk, shortlist) or {}, keep_if=bool)
         kr_live = (kr or {}).get("forecasts") or None
         industries = dict(zip(universe["symbol"], universe["industry"]))
         industries = {t: i for t, i in industries.items() if isinstance(i, str) and asset_types.get(t) == "stock"}
@@ -534,7 +549,7 @@ def execute_run(run_id: int, provider: str | None = None, prices: dict | None = 
         px = float(prices.get(o["ticker"], o["price"]))
         try:
             meta = {"thesis": o.get("thesis", ""), "invalidation": o.get("invalidation", ""),
-                    "invalidation_px": o.get("invalidation_px"), "entry_date": prop.get("asof"),
+                    "invalidation_px": o.get("invalidation_px"), "entry_date": db.today(),
                     "regime": prop.get("regime"), "sector": o.get("sector"), "signals": o.get("signals", {}),
                     "horizon_days": 5}
             tr = db.execute_trade(run_id, o["ticker"], o["side"], o["shares"], px, o["reason"], meta,
@@ -606,6 +621,55 @@ def _signals_text(c: dict | None) -> str:
     if c.get("quant_fallback"):
         txt += f" · Q from {c['quant_fallback']}"
     return txt
+
+
+def replay(days: int = 20, provider: str | None = "mock", progress=None) -> dict:
+    """IPS D6-D9: run the full committee for the last `days` trading days into finance_replay.db (never finance.db).
+    Day d decides on prices up to the previous close and fills at d's OPEN, stamped 15:30 Madrid (D8). Reflection
+    grading runs inside the replay. Returns a summary (return vs SPY, max DD, trades, committee hit rate)."""
+    import datetime as _dt
+    emit = progress or (lambda stage, msg: print(f"[{stage}] {msg}"))
+    R = config.REPLAY
+    saved = (config.DB_PATH, config.TRADES_CSV, report.REPORT_DIR, db.now)
+    config.DB_PATH, config.TRADES_CSV = R["db"], R["trades_csv"]
+    report.REPORT_DIR = R["report_dir"]
+    db._DB["path"] = R["db"]
+    try:
+        db.init_db(reset=True)
+        full = data.get_market_data(data.get_universe()["symbol"].tolist())
+        dates = full["close"].index[-days:]
+        hh, mm = map(int, R["fill_time_madrid"].split(":"))
+        for i, d in enumerate(dates):
+            stamp = _dt.datetime(d.year, d.month, d.day, hh, mm, tzinfo=db.MADRID)
+            db.now = lambda stamp=stamp: stamp
+            emit("replay", f"Day {i + 1}/{len(dates)}: {d.date()} (data to {dates[i - 1].date() if i else 'prev close'})")
+            res = run_committee(provider, progress=lambda *a: None, asof=d)
+            if res["status"] == "proposed":
+                opens = {t: float(full["open"][t].loc[d]) for t in {o["ticker"] for o in res["orders"]}
+                         if t in full["open"].columns and pd.notna(full["open"][t].loc[d])}
+                execute_run(res["run_id"], provider=provider, prices=opens)
+            px_close = {t: float(full["close"][t].loc[d]) for t in full["close"].columns if pd.notna(full["close"][t].loc[d])}
+            db.record_snapshot(res["run_id"], px_close, px_close[config.BENCHMARK])
+            report.daily_report()
+        snaps = db.get_snapshots()
+        nav = snaps["total_equity"]
+        spy = snaps["benchmark_px"]
+        import reflection as _r
+        summary = {"days": len(dates), "from": str(dates[0].date()), "to": str(dates[-1].date()),
+                   "return": round(float(nav.iloc[-1] / config.STARTING_CAPITAL - 1), 4),
+                   "spy_return": round(float(spy.iloc[-1] / full["close"][config.BENCHMARK].loc[:dates[0]].iloc[-2] - 1), 4),
+                   "max_drawdown": round(float((nav / nav.cummax().clip(lower=config.STARTING_CAPITAL) - 1).min()), 4),
+                   "trades": int(len(db.get_trades())), "track_record": _r.track_record(), "provider": provider,
+                   "limitations": "prices only; fundamentals = today's snapshot (frozen); no historical news (Sentiment n/a); "
+                                  "no Kronos; today's S&P 500 constituents (survivorship)"}
+        summary["excess"] = round(summary["return"] - summary["spy_return"], 4)
+        os.makedirs(R["report_dir"], exist_ok=True)
+        with open(os.path.join(R["report_dir"], "summary.json"), "w") as f:
+            json.dump(summary, f, indent=1, default=str)
+        return summary
+    finally:
+        config.DB_PATH, config.TRADES_CSV, report.REPORT_DIR, db.now = saved
+        db._DB["path"] = config.DB_PATH
 
 
 def snapshot_only() -> float:
@@ -686,6 +750,7 @@ if __name__ == "__main__":
     ap.add_argument("--reset", action="store_true", help="wipe the fund back to $1M cash")
     ap.add_argument("--snapshot", action="store_true", help="only revalue the portfolio (after-close run)")
     ap.add_argument("--recheck", action="store_true", help="intraday news re-check on held names (C4.5)")
+    ap.add_argument("--replay", type=int, metavar="DAYS", help="run the committee over the last N trading days into finance_replay.db")
     args = ap.parse_args()
     if args.reset:
         data.get_market_data(data.get_universe()["symbol"].tolist())
@@ -695,6 +760,9 @@ if __name__ == "__main__":
         raise SystemExit
     if args.snapshot:
         print(f"NAV ${snapshot_only():,.0f}")
+        raise SystemExit
+    if args.replay:
+        print(json.dumps(replay(args.replay, args.provider or "mock"), indent=1, default=str))
         raise SystemExit
     res = intraday_recheck(args.provider, execute=args.execute) if args.recheck else \
         run_committee(args.provider, execute=args.execute)

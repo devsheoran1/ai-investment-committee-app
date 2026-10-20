@@ -480,7 +480,7 @@ def plan_orders(target_w: dict[str, float], positions: dict[str, dict], px: dict
                         if t in forced_exits or target_w.get(t, 0.0) == 0)
     cash_heavy = (cash + exit_proceeds) / nav > L["max_cash_weight"]       # A12 beats the A16 drift band
     survivors = len([t for t in held_names if t not in forced_exits])
-    replenish = survivors < config.TARGET_HOLDINGS[0]                     # A7: replacement buys first
+    replenish = (not init_mode) and survivors < config.TARGET_HOLDINGS[0]  # A7: replacement buys first (daily runs)
     for t in sorted(set(target_w) | set(positions)):
         held = float(positions.get(t, {}).get("shares", 0))
         if t not in px:                                                    # C8.5: never crash on a missing price

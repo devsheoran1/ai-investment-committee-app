@@ -57,13 +57,14 @@ def _samples(R, dv, vol20, mkt, lookback, horizon, train_end: int):
             np.array(latest, np.float32), sd)
 
 
-def forecast(prices: pd.DataFrame, tickers: list[str], volume: pd.DataFrame | None = None) -> dict:
+def forecast(prices: pd.DataFrame, tickers: list[str], volume: pd.DataFrame | None = None,
+             wf_days: int = WF_DAYS, retrain_every: int = RETRAIN_EVERY) -> dict:
     p = config.LSTM
     lookback, h = 60, p["horizon"]
     R, dv, vol20, mkt, idx_dates = _panel(prices, volume, tickers)
     T = len(R)
-    first_oos = max(lookback + 120, T - h - WF_DAYS)                 # leave >= ~120 days for the first training set
-    blocks = list(range(first_oos, T - h + 1, RETRAIN_EVERY))
+    first_oos = max(lookback + 120, T - h - wf_days)                 # leave >= ~120 days for the first training set
+    blocks = list(range(first_oos, T - h + 1, retrain_every))
     try:
         import torch  # noqa: F401
         fit = _fit_lstm
@@ -105,7 +106,7 @@ def forecast(prices: pd.DataFrame, tickers: list[str], volume: pd.DataFrame | No
         "model": name,
         "train_samples": int(len(df)),
         "test_samples": int(len(df)),
-        "walk_forward_days": int(min(WF_DAYS, T - h - first_oos)),
+        "walk_forward_days": int(min(wf_days, T - h - first_oos)),
         "retrains": len(blocks),
         "oos_directional_hit_rate": round(hit, 3),
         "always_up_hit_rate": round(base, 3),
@@ -122,7 +123,7 @@ def _fit_lstm(Xtr, ytr, Xte, p):
 
     torch.manual_seed(p["seed"])
     np.random.seed(p["seed"])
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    device = config.LSTM_DEVICE if config.LSTM_DEVICE != "auto" else ("mps" if torch.backends.mps.is_available() else "cpu")
 
     class Net(nn.Module):
         def __init__(self):

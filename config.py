@@ -203,12 +203,19 @@ SCREEN_STAGE1 = {"weights": {"mom_12_1_volscaled": 0.39, "industry_mom_1m": 0.24
                  "keep": 60}
 SCREEN_STAGE2 = {"weights": {"stage1": 0.57, "revisions_drift": 0.27, "quality": 0.16}, "keep": 30}
 
+# 20-day replay (IPS D6-D9, Stage 6). Separate DB, decisions on data up to the previous close, fills at the open.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+REPLAY = {"db": os.path.join(_HERE, "finance_replay.db"), "trades_csv": os.path.join(_HERE, "trades_replay.csv"),
+          "report_dir": os.path.join(_HERE, "reports", "replay"), "lstm_wf_days": 60, "lstm_retrain_every": 30,
+          "fill_time_madrid": "15:30"}
+
 # How the composite blends analyst scores (IPS C5.2, must sum to 1)
 SIGNAL_WEIGHTS = {"quant": 0.40, "sentiment": 0.30, "research": 0.15, "macro": 0.15}
 
 # --------------------------------------------------------------------------- #
 # Deep learning model
 # --------------------------------------------------------------------------- #
+LSTM_DEVICE = os.getenv("LSTM_DEVICE", "cpu")    # cpu is 2.5x faster than MPS for this small LSTM (measured Oct 20)
 LSTM = {
     "lookback": 30,       # days of returns fed to the network
     "horizon": 5,         # predict cumulative return over next 5 trading days

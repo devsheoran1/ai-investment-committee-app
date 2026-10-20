@@ -55,6 +55,12 @@ def badge(text: str, good: bool) -> str:
 
 universe, close, source, uni_source, synthetic = load_market()
 db.use_synthetic(synthetic)
+FUND_VIEW = st.sidebar.radio("Fund", ["Live", "Replay (last 20 days)"], horizontal=True,
+                             help="Replay = finance_replay.db from `python orchestrator.py --replay 20`. Read-only here.")
+REPLAY_VIEW = FUND_VIEW.startswith("Replay")
+if REPLAY_VIEW:
+    db._DB["path"] = config.REPLAY["db"]
+    config.TRADES_CSV = config.REPLAY["trades_csv"]
 db.init_db()
 last_px = {t: float(close[t].dropna().iloc[-1]) for t in close.columns if close[t].notna().any()}
 sector_of = dict(zip(universe["symbol"], universe["sector"]))
@@ -206,7 +212,9 @@ with tab_floor:
     mode = "Initialisation (build 10-20 positions, trade cap exempt)" if not db.is_initialized() else \
         f"Daily (max {config.MAX_TRADES_PER_DAY} trades)"
     st.markdown(f"**Mode:** {mode}")
-    if st.button("▶️ Run Agents", type="primary"):
+    if REPLAY_VIEW:
+        st.info("Viewing the replay fund (read-only). Run it with `python orchestrator.py --replay 20`.")
+    if not REPLAY_VIEW and st.button("▶️ Run Agents", type="primary"):
         with st.status("Investment committee in session…", expanded=True) as status:
             def progress(stage, msg):
                 status.write(f"**{stage}** — {msg}")
@@ -224,7 +232,7 @@ with tab_floor:
         load_market.clear()
         st.rerun()
 
-    if db.get_positions() and st.button("📰 Intraday news re-check (held names, uses a run slot)",
+    if not REPLAY_VIEW and db.get_positions() and st.button("📰 Intraday news re-check (held names, uses a run slot)",
                                         help="IPS C4.5: refresh headlines for held names only; a held name at <= -0.8 "
                                              "triggers a sell proposal through Risk -> CIO -> Trader."):
         with st.status("Re-checking news on held names…", expanded=True) as status:
@@ -259,7 +267,7 @@ with tab_floor:
                        f"proposals older than 2 h are refused.")
             st.dataframe(po[["name", "side", "shares", "price", "notional", "reason"]],
                          width="stretch", hide_index=True)
-            if st.button("✅ Execute Trades", type="primary"):
+            if not REPLAY_VIEW and st.button("✅ Execute Trades", type="primary"):
                 out = execute_run(run_id)
                 st.toast(f"Executed {len(out['trades'])} trade(s) · NAV ${out['nav']:,.0f}")
                 st.rerun()
@@ -327,6 +335,35 @@ with tab_perf:
         k2.metric("Max Drawdown", f"{dd.min():.2%}")
         k3.metric("Win Rate (up days)", f"{(daily > 0).mean():.0%}" if len(daily) else "–")
         k4.metric("vs SPY", f"{(s['fund_idx'].iloc[-1] - s['spy_idx'].iloc[-1]):+.2f} pts")
+        # IPS E6 (Oct 20): beta, cash %, leveraged %, days per regime, committee hit rate
+        last_risk = {}
+        for rid in db.get_runs()["id"].tolist():
+            ms = [m for m in db.get_messages(int(rid)) if m["agent"] == "Risk Manager"]
+            if ms:
+                last_risk = ms[-1]["content"]; break
+        lev_w = sum(w for t, w in weights.items() if t in config.LEVERAGED_ETFS)
+        with db.conn() as c_:
+            reg = dict(c_.execute("SELECT effective, COUNT(*) FROM regime_state GROUP BY effective").fetchall())
+        rec = reflection.track_record()
+        e1, e2, e3, e4, e5 = st.columns(5)
+        lc = {c_["rule"]: c_["value"] for c_ in last_risk.get("limit_checks", [])}
+        e1.metric("Beta (post-trade book)", lc.get("Beta band (C1.4, target)", "–"))
+        e2.metric("Cash", f"{cash / nav:.1%}", "limit 3%", delta_color="off")
+        e3.metric("Leveraged ETFs", f"{lev_w:.1%}")
+        e4.metric("Days per regime", " · ".join(f"{k.replace('_', '-')} {v}" for k, v in reg.items()) or "–")
+        e5.metric("Committee hit rate", f"{rec['hit_rate']:.0%}" if rec.get("hit_rate") is not None else "–",
+                  f"{rec.get('calls', 0)} graded calls", delta_color="off")
+        att = report.attribution_result()
+        if att:
+            st.subheader("Attribution vs SPY (Brinson-Fachler, Carino-linked)")
+            st.markdown(att["line"])
+            pp = att["cumulative"]["parts"]
+            labels = {"sector_calls": "Sector calls", "benchmark_tracking": "SPY vs sector ETFs", "stock_picking": "Selection",
+                      "leverage_beta": "Leverage beta", "leverage_decay": "Leverage decay", "cash_drag": "Cash drag"}
+            wf = go.Figure(go.Waterfall(x=[labels[k] for k in labels] + ["Total"], measure=["relative"] * len(labels) + ["total"],
+                                        y=[pp[k] * 100 for k in labels] + [0], connector={"line": {"color": "#9DB9E3"}}))
+            wf.update_layout(height=320, margin=dict(l=10, r=10, t=20, b=10), yaxis_ticksuffix="%")
+            st.plotly_chart(wf, width="stretch")
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=s["date"], y=s["total_equity"], name="Portfolio value",
                                  line=dict(color=BLUE, width=3), mode="lines+markers"))
