@@ -108,9 +108,21 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
     shortlist = [t for t in scr["shortlist"] if t not in bad or t in holdings]
     shortlist = [t for t in shortlist if t in close.columns and close[t].dropna().shape[0] > 63]
     last_px = _last_prices(close, set(shortlist) | set(holdings) | {config.BENCHMARK})
+    # C8.5: a held name Yahoo didn't return today is valued at its last known close and can't trade today
+    # (Oct 20: ABNB missing from a 382/513 download crashed runs 4-7 and would have dropped out of NAV)
+    missing_held = [t for t in holdings if t not in last_px]
+    if missing_held:
+        fb = data.last_known_prices(missing_held)
+        for t in missing_held:
+            last_px[t] = fb.get(t, positions[t]["avg_cost"])
+            untradeable[t] = "no valid live price today; valued at last known close (C8.5)"
     current_w, nav = db.current_weights(last_px)
     cash = db.get_cash()
-    drawdown = db.drawdown_from_peak(nav)
+    snaps = db.get_snapshots()
+    dd_state = analytics.drawdown_state(snaps[snaps["date"] < db.today()]["total_equity"].tolist() if len(snaps) else [], nav)
+    drawdown = dd_state["drawdown"]
+    caps = analytics.etf_caps(close, set(shortlist) | set(holdings), asset_types)
+    adv = analytics.adv20(market, set(shortlist) | set(holdings))
     prev_eq = db.last_snapshot_equity()
     nav_jump = (f"NAV moved {nav / prev_eq - 1:+.0%} vs last snapshot (> {config.NAV_JUMP_HALT:.0%}): "
                 f"likely data error, manual review needed (IPS C8.6)"
@@ -214,12 +226,10 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
                 forced[t] = f"stop-loss: {px / p['avg_cost'] - 1:.1%} from cost (IPS A17)"
             elif (ctx["sentiment"]["sentiment"].get(t) or {}).get("score", 0) <= config.NEWS_SELL_TRIGGER:
                 forced[t] = f"news veto: sentiment {ctx['sentiment']['sentiment'][t]['score']} (IPS C4.4)"
-            elif kind == "leveraged_etf" and db.held_trading_days(t, p["opened_date"]) >= config.LEVERAGED_MAX_HOLD_DAYS:
-                forced[t] = f"leveraged ETF held {config.LEVERAGED_MAX_HOLD_DAYS}+ trading days (IPS C6.4)"
             elif kind == "leveraged_etf" and regime == "risk_off":
                 forced[t] = "leveraged long in risk-off (IPS C5.4)"
-            elif kind == "leveraged_etf" and drawdown <= config.RISK_LIMITS["max_drawdown"]:
-                forced[t] = f"fund drawdown {drawdown:.1%} past {config.RISK_LIMITS['max_drawdown']:.0%} (IPS A4)"
+            elif kind == "leveraged_etf" and dd_state["level"] == "hard":
+                forced[t] = f"fund drawdown {drawdown:.1%} at/below {config.DD_HARD:.0%}: all leveraged longs out (IPS A4/C11)"
             elif kind == "inverse_etf" and regime != "risk_off":
                 forced[t] = "inverse hedge no longer needed: regime left risk-off (IPS A11)"
         forced = {t: r for t, r in forced.items() if t not in untradeable}
@@ -232,7 +242,16 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
             t for t in unheld
             if comp[t]["composite_10"] >= 7 and comp[t]["quant"] >= 0.2 and rank[t] <= 10
             and comp[t]["composite_10"] >= weakest + 1 and not comp[t]["insufficient_data"]
-            and not (asset_types.get(t) == "leveraged_etf" and drawdown <= config.RISK_LIMITS["max_drawdown"])]
+            and not (asset_types.get(t) == "leveraged_etf" and dd_state["no_new_leveraged"])]
+        # IPS A7: below the 12-name target after forced exits -> replacement buys take priority
+        survivors = len([t for t in holdings if t not in forced])
+        if not init_mode and survivors < config.TARGET_HOLDINGS[0] and (not no_new_trades or survivors < config.MIN_HOLDINGS):
+            for t in unheld:
+                if len(eligible_new) >= config.TARGET_HOLDINGS[0] - survivors + 2:
+                    break
+                if (t not in eligible_new and asset_types.get(t) == "stock" and not comp[t]["insufficient_data"]
+                        and comp[t]["composite_10"] >= 5):
+                    eligible_new.append(t)
         exit_cands = [t for t in holdings if t in comp and t not in forced and (
             comp[t]["quant"] < -0.2 or rank[t] > 20 or comp[t]["composite_10"] <= best_unheld - 2)]
         ctx.update(eligible_new=eligible_new, exit_candidates=exit_cands, forced_exits=forced)
@@ -240,17 +259,24 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         ctx["lessons"] = reflection.lessons_for(relevant, {sectors.get(t) for t in relevant}, regime)
         ctx["track_record"] = reflection.track_record()
         ctx["invalidated"] = [i for i in reflection.invalidated(positions, last_px) if i["ticker"] not in forced]
+        ctx["invalidated"] += [r for r in _lev_reviews(positions, close, last_px, asset_types)
+                               if r["ticker"] not in forced and r["ticker"] not in {i["ticker"] for i in ctx["invalidated"]}]
+        ctx["dd_state"] = dd_state
 
         # ---------------------------------------------- 5. PM <-> Risk loop -- #
-        max_names = config.TARGET_HOLDINGS_INIT if init_mode else \
-            min(config.MAX_HOLDINGS, max(len(holdings), config.TARGET_HOLDINGS_INIT))
+        lo_n, hi_n = config.TARGET_HOLDINGS
+        max_names = config.TARGET_HOLDINGS_INIT if init_mode else min(hi_n, max(len(holdings), lo_n))
+        dd_lev = dd_state["lev_cap"]
 
-        def build(pm, lev_override=None, risk_aversion=4.0):
-            target = analytics.optimise(pm["convictions"], close, sectors, asset_types, pm["equity_exposure"],
-                                        regime, macro["vix_level"], max_names, risk_aversion=risk_aversion,
-                                        lev_cap_override=lev_override,
-                                        min_weight=max(0.01, config.MIN_TRADE_NOTIONAL / nav * 1.05),
-                                        ensure_min=init_mode)
+        def build(pm, lev_override=None, risk_aversion=4.0, target=None):
+            lev_lim = min(x for x in (lev_override, dd_lev, 1.0) if x is not None)
+            if target is None:
+                target = analytics.optimise(pm["convictions"], close, sectors, asset_types, pm["equity_exposure"],
+                                            regime, macro["vix_level"], max_names, risk_aversion=risk_aversion,
+                                            lev_cap_override=lev_lim,
+                                            min_weight=max(0.01, config.MIN_TRADE_NOTIONAL / nav * 1.05),
+                                            ensure_min=init_mode, caps=caps,
+                                            inverse_min=dd_state["inverse_min_risk_off"])
             if not init_mode:   # held names the PM didn't exit stay at their weight unless resized
                 for t, w in current_w.items():
                     if (t not in target and pm["convictions"].get(t, 0) > -0.5 and t not in forced
@@ -259,17 +285,20 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
                 tot = sum(target.values())
                 if tot > 1:
                     target = {t: math.floor(w / tot * 1e4) / 1e4 for t, w in target.items()}
+            lev_eff = min(config.RISK_LIMITS["max_leveraged_total"], rules["max_leveraged"], lev_lim)
             orders, skipped = analytics.plan_orders(target, positions, last_px, nav, cash, forced,
-                                                    init_mode, comp, untradeable)
+                                                    init_mode, comp, untradeable, sectors=sectors,
+                                                    asset_types=asset_types, caps=caps, lev_cap=lev_eff,
+                                                    no_new_leveraged=dd_state["no_new_leveraged"])
             post = _post_trade_weights(positions, cash, orders, last_px)
-            rr = analytics.risk_report(post, close, sectors, asset_types, regime, drawdown)
-            if not init_mode:   # partial rebalances can't always hit the cash band in one day
-                rr["soft_concerns"] += [b for b in rr["breaches"] if "cash" in b and "> maximum" in b]
-                rr["breaches"] = [b for b in rr["breaches"] if not ("cash" in b and "> maximum" in b)]
+            # Prof. Manero rule 3: the Risk Manager checks the book that will ACTUALLY exist after the
+            # 5-trade cap, the $25k minimum and the cash upsizing. A breach here = re-plan, never execute.
+            rr = RiskManager.check_book(post, close, sectors, asset_types, regime, nav_drawdown=drawdown, adv=adv,
+                                        nav=nav, caps=caps, dd_state=dd_state, current_weights=current_w)
             return target, orders, skipped, rr, post
 
         risk_feedback, prev = None, None
-        for rnd in range(1, config.MAX_RISK_ROUNDS + 2):
+        for rnd in range(1, config.MAX_RISK_ROUNDS + 1):
             pm = call(PortfolioManager, "proposal", rnd, risk_feedback=risk_feedback, prev_proposal=prev)
             target, orders, skipped, rr, post = build(pm)
             proposal = {**pm, "weights": target}
@@ -280,22 +309,32 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
             risk_feedback = {"issues": risk["issues"], "required_changes": risk["required_changes"]}
             prev = {"convictions": pm["convictions"], "target_weights": {t: w for t, w in target.items() if w > 0}}
         else:
-            # Out of rounds: mechanical de-risk that keeps >= 95% invested (IPS A12):
-            # cut leveraged ETF room, raise risk aversion, until hard limits hold.
-            lev = rules["max_leveraged"]
-            ra = 4.0
-            for _ in range(8):
+            # Out of rounds (IPS C6.5): mechanical de-risk. First shrink the offending positions pro rata and
+            # hand the weight to compliant names; then, if needed, cut leverage room / raise risk aversion.
+            steps, lev, ra = [], rules["max_leveraged"], 4.0
+            for i in range(8):
                 if not rr["breaches"]:
                     break
-                lev, ra = max(0.0, lev - 0.05), ra * 1.5
-                target, orders, skipped, rr, post = build(pm, lev_override=lev, risk_aversion=ra)
+                if i < 3:
+                    target = analytics.shrink_to_limits(target, rr, sectors, asset_types, caps,
+                                                        lev_cap=min(rules["max_leveraged"], dd_lev if dd_lev is not None else 1.0))
+                    steps.append(f"pro-rata shrink of offending positions ({'; '.join(rr['breaches'][:2])})")
+                    target, orders, skipped, rr, post = build(pm, target=target)
+                else:
+                    lev, ra = max(0.0, lev - 0.05), ra * 1.5
+                    steps.append(f"leveraged room {lev:.0%}, risk aversion {ra:.1f}")
+                    target, orders, skipped, rr, post = build(pm, lev_override=lev, risk_aversion=ra)
             proposal = {**pm, "weights": target}
-            risk = {"decision": "approve" if not rr["breaches"] else "reject", "issues": risk["issues"],
-                    "required_changes": "",
-                    "rationale": (f"Negotiation rounds exhausted. Leveraged room cut to {lev:.0%}, risk aversion "
-                                  f"{ra:.1f}; hard limits {'now met' if not rr['breaches'] else 'STILL breached'}."),
-                    "hard_breaches": rr["breaches"]}
-            db.log_message(run_id, "Risk Manager", "Chief Risk Officer — hard override", "rules",
+            ok = not rr["breaches"]
+            risk = {"decision": "approve" if ok and not rr["soft_rejects"] else ("approve" if ok else "reject"),
+                    "issues": risk["issues"], "hard_breaches": rr["breaches"], "soft_rejects": rr["soft_rejects"],
+                    "warnings": rr["warnings"], "limit_checks": rr["limit_checks"],
+                    "required_changes": [] if ok else ["hard limits still breached after mechanical de-risk: keep current book"],
+                    "override": "mechanical de-risk after 3 rejected rounds (IPS C6.5)",
+                    "rationale": (f"{config.MAX_RISK_ROUNDS} rounds exhausted. Mechanical de-risk: {' -> '.join(steps) or 'none needed'}. "
+                                  f"Hard limits {'now met' if ok else 'STILL breached'}"
+                                  f"{'; remaining soft concerns escalated to the CIO' if ok and rr['soft_rejects'] else ''}.")}
+            db.log_message(run_id, "Risk Manager", "Chief Risk Officer — mechanical de-risk (IPS C6.5)", "rules",
                            "risk_override", rnd, risk)
 
         turnover = sum(o["notional"] for o in orders) / nav / 2
@@ -384,6 +423,36 @@ def snapshot_only() -> float:
     nav = db.record_snapshot(None, px, px[config.BENCHMARK])
     report.daily_report()
     return nav
+
+
+def _lev_reviews(positions, close, last_px, asset_types) -> list[dict]:
+    """IPS C6.4 (Oct 20): a leveraged/inverse ETF needs re-approval when its return since entry < 0, it is
+    > 12% below its peak since entry, or it lags leverage x its underlying by more than the decay tolerance."""
+    out = []
+    for t, p in positions.items():
+        if asset_types.get(t) not in ("leveraged_etf", "inverse_etf") or t not in last_px or t not in close.columns:
+            continue
+        px, entry = last_px[t], p["avg_cost"]
+        since = close[t].loc[close.index >= str(p.get("opened_date") or close.index[-1].date())].dropna()
+        reasons = []
+        ret = px / entry - 1
+        if ret < 0:
+            reasons.append(f"return since entry {ret:+.1%} < 0")
+        if len(since) and px / max(float(since.max()), px) - 1 < config.LEV_REVIEW_PEAK_DD:
+            reasons.append(f"{px / float(since.max()) - 1:+.1%} from its peak since entry (> 12% drawdown)")
+        u = config.ETF_UNDERLYING.get(t)
+        if u in close.columns and len(since) > 1:
+            useries = close[u].loc[since.index].dropna()
+            if len(useries) > 1:
+                expected = config.LEVERAGE_FACTOR.get(t, 1.0) * (float(useries.iloc[-1]) / float(useries.iloc[0]) - 1)
+                actual = px / float(since.iloc[0]) - 1
+                if actual < expected - config.LEV_REVIEW_DECAY_TOL:
+                    reasons.append(f"decay: {actual:+.1%} vs {expected:+.1%} expected from {u} x {config.LEVERAGE_FACTOR.get(t)}")
+        if reasons:
+            out.append({"ticker": t, "thesis": "leveraged ETF re-approval (IPS C6.4)", "invalidation": "; ".join(reasons),
+                        "entry_px": round(entry, 2), "invalidation_px": None, "last_px": round(px, 2),
+                        "since_entry": round(ret, 4), "type": "leveraged_review"})
+    return out
 
 
 def _post_trade_weights(positions, cash, orders, px) -> dict[str, float]:

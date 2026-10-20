@@ -80,14 +80,26 @@ BENCHMARK = "SPY"                       # IPS A1 default
 # + leveraged ETFs. Brief §10.3: "Trading is restricted to stocks and leveraged ETFs."
 UNIVERSE_SOURCE = "sp500"
 SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-LEVERAGED_ETFS = {                      # IPS B2 default list (3x unless noted)
-    "TQQQ": "Nasdaq-100", "UPRO": "S&P 500", "SOXL": "Semiconductors",
-    "TECL": "Technology", "FAS": "Financials", "TNA": "Russell 2000",
-    "LABU": "Biotech", "ERX": "Energy (2x)",
+LEVERAGED_ETFS = {                      # IPS B2 (Oct 20 list; screener keeps only ADV > $10m). 3x unless noted
+    "TQQQ": "ProShares UltraPro QQQ (3x Nasdaq-100)", "UPRO": "ProShares UltraPro S&P 500 (3x)",
+    "SPXL": "Direxion Daily S&P 500 Bull 3x", "SOXL": "Direxion Daily Semiconductor Bull 3x",
+    "TECL": "Direxion Daily Technology Bull 3x", "FAS": "Direxion Daily Financial Bull 3x",
+    "TNA": "Direxion Daily Small Cap Bull 3x", "LABU": "Direxion Daily S&P Biotech Bull 3x",
+    "ERX": "Direxion Daily Energy Bull 2x", "CURE": "Direxion Daily Healthcare Bull 3x",
+    "DRN": "Direxion Daily Real Estate Bull 3x", "NAIL": "Direxion Daily Homebuilders Bull 3x",
+    "DPST": "Direxion Daily Regional Banks Bull 3x", "UDOW": "ProShares UltraPro Dow30 (3x)",
 }
-INVERSE_ETFS = {"SQQQ": "Nasdaq-100 (-3x)", "SPXU": "S&P 500 (-3x)"}   # IPS A11: hedges only
+INVERSE_ETFS = {                        # IPS A11: hedges only, risk-off only
+    "SQQQ": "ProShares UltraPro Short QQQ (-3x)", "SPXU": "ProShares UltraPro Short S&P 500 (-3x)",
+    "SOXS": "Direxion Daily Semiconductor Bear 3x", "SDOW": "ProShares UltraPro Short Dow30 (-3x)",
+}
+ETF_NAMES = {**LEVERAGED_ETFS, **INVERSE_ETFS}
 LEVERAGE_FACTOR = {**{t: 3.0 for t in LEVERAGED_ETFS}, "ERX": 2.0,
                    **{t: -3.0 for t in INVERSE_ETFS}}
+# Underlying index proxy per ETF (IPS C6.4 decay check: ETF return vs leverage x underlying)
+ETF_UNDERLYING = {"TQQQ": "QQQ", "UPRO": "SPY", "SPXL": "SPY", "SOXL": "SOXX", "TECL": "XLK", "FAS": "XLF",
+                  "TNA": "IWM", "LABU": "XBI", "ERX": "XLE", "CURE": "XLV", "DRN": "XLRE", "NAIL": "ITB",
+                  "DPST": "KRE", "UDOW": "DIA", "SQQQ": "QQQ", "SPXU": "SPY", "SOXS": "SOXX", "SDOW": "DIA"}
 
 PRICE_HISTORY = "2y"     # enough for 12-1m momentum + the LSTM; keeps the S&P 500 download fast
 
@@ -114,17 +126,30 @@ RISK_LIMITS = {
     "max_single_weight": 0.20,          # IPS A8 (Brief mega-prompt says 40%; ours is stricter)
     "max_sector_weight": 0.35,          # IPS A9
     "min_cash_weight": 0.0,             # Brief §8.2 constraint 1: cash >= 0
-    "max_cash_weight": 0.05,            # IPS A12: "not more than 5%"
+    "max_cash_weight": 0.03,            # IPS A12 (Oct 20): "not more than 3%", checked on the post-trade book
     "max_portfolio_vol": 0.25,          # IPS A3 default
     "max_var_95_1d": 0.05,              # IPS A5
     "max_beta": None,                   # IPS A6: "any" (regime bands in C1.4 are soft checks)
     "max_leveraged_total": 0.30,        # IPS A10
     "max_leveraged_each": 0.15,         # IPS A10
     "max_inverse_total": 0.25,          # IPS A11 (only in risk-off)
-    "max_drawdown": -0.10,              # IPS A4: from peak NAV
+    "max_drawdown": -0.10,              # IPS A4: from peak NAV (graduated, see DD_* below)
 }
 STOP_LOSS = -0.10                       # IPS A17: -10% from average cost -> forced sell
-LEVERAGED_MAX_HOLD_DAYS = 5             # IPS C6.4 default / C5.4
+# IPS C6.4 (Oct 20): no max holding period while a leveraged ETF is in profit; re-approval needed when
+# its return < 0, it is > 12% below its peak since entry, or it lags leverage x underlying by > decay tolerance.
+LEV_REVIEW_PEAK_DD = -0.12
+LEV_REVIEW_DECAY_TOL = 0.02
+# Vol-targeted leverage sleeve: ETF cap = base cap x (1y median 20d vol / current 20d vol), never above the IPS caps
+LEV_VOL_WINDOW = 20
+LEV_VOL_TARGET_LOOKBACK = 252
+LEV_BASE_CAP_EACH = 0.15                # IPS A10 per leveraged ETF
+INV_BASE_CAP_EACH = 0.25                # IPS A11 inverse total (single hedge ETF can carry it)
+# IPS A4 / C11 (signed off Oct 20, graduated)
+DD_WARN, DD_HARD = -0.07, -0.10         # from peak NAV
+DD_WARN_LEV_CAP = 0.10                  # at -7%: leveraged sleeve <= 10%, no new leveraged buys
+DD_HARD_INVERSE_MIN = 0.15              # at -10%: all leveraged longs out; in risk-off inverse hedge >= 15%
+DD_RECOVERY_DAYS = 2                    # restrictions lift after 2 consecutive days back above -7%
 NEWS_SELL_TRIGGER = -0.8                # IPS C4.4
 DRIFT_TOLERANCE = 0.05                  # IPS A16: resizes smaller than this are skipped
 
@@ -132,15 +157,17 @@ DRIFT_TOLERANCE = 0.05                  # IPS A16: resizes smaller than this are
 MAX_TRADES_PER_DAY = 5                  # Brief §1: "5 trades (5 stocks)"
 INIT_DAY_EXEMPT_FROM_CAP = True         # IPS D1: initialisation needs 10-20 buys (confirm with Prof. Manero)
 MAX_RUNS_PER_DAY = 3                    # Brief §10.2
-MIN_HOLDINGS, MAX_HOLDINGS = 10, 20     # Brief §1: "10 or 20"
-TARGET_HOLDINGS_INIT = 15
+MIN_HOLDINGS, MAX_HOLDINGS = 10, 20     # Brief §1: "10 or 20"; 10 is a hard floor every day (IPS A7)
+TARGET_HOLDINGS = (12, 15)              # IPS A7 (Oct 20): buffer so one exit never breaches the floor
+TARGET_HOLDINGS_INIT = 14
+TARGET_CASH = 0.01                      # where upsizing aims when cash would exceed the 3% cap
 MAX_DAILY_TURNOVER = 0.25               # IPS A18, one-way (buys + sells) / 2 / NAV
 MIN_TRADE_NOTIONAL = 25_000             # IPS C8.4
 TRANSACTION_COST_BPS = 0                # IPS A20: nil unless the professor sets one
 NAV_JUMP_HALT = 0.20                    # IPS C8.6: >20% NAV move vs last snapshot = data error
 PRICE_JUMP_EXCLUDE = 0.20               # IPS D10: per-ticker pre-flight check
 
-# Exposure per regime (IPS C1.4). Always >= 95% invested (A12).
+# Exposure per regime (IPS C1.4). Always >= 97% invested (A12: cash <= 3%).
 REGIME_RULES = {
     "risk_on":  {"equity_exposure": 0.98, "max_leveraged": 0.30, "inverse": (0.0, 0.0),  "beta": (1.2, 1.6)},
     "neutral":  {"equity_exposure": 0.98, "max_leveraged": 0.10, "inverse": (0.0, 0.0),  "beta": (0.9, 1.2)},
@@ -148,7 +175,9 @@ REGIME_RULES = {
 }
 RISK_OFF_HIGH_VIX = 30                  # IPS C1.4: inverse hedge up to 25% if VIX > 30
 
-MAX_RISK_ROUNDS = 2                     # IPS C6.5
+MAX_RISK_ROUNDS = 3                     # IPS C6.5 (Oct 20)
+# IPS C6.3: the only soft concerns allowed to reject
+SOFT_REJECT = {"min_effective_positions": 4, "max_top3_pair_corr": 0.90, "max_adv_fraction": 0.25}
 
 # How the composite blends analyst scores (IPS C5.2, must sum to 1)
 SIGNAL_WEIGHTS = {"quant": 0.40, "sentiment": 0.30, "research": 0.15, "macro": 0.15}

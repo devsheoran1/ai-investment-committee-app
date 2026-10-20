@@ -1,3 +1,5 @@
+import config
+
 from .base import Agent, compact, clip
 
 
@@ -8,7 +10,7 @@ class PortfolioManager(Agent):
     role_prompt = """You turn the analysts' views into a target portfolio. You do NOT set weights:
 you set a CONVICTION per name (-1 = exit/avoid, 0 = no view, +1 = maximum overweight)
 and the fund's optimiser converts them into weights under the IPS limits (20% max per
-stock, 35% per sector, leveraged ETFs capped by regime, >= 95% invested).
+stock, 35% per sector, leveraged ETFs capped by regime and by their vol-targeted caps, >= 97% invested, 10-20 names).
 The composite (0-10 scale) blends Quant 40%, Sentiment 30%, Research 15%, Macro 15%.
 Entry rule for a NEW name on a daily run (IPS C5.3): composite >= 7/10, Quant >= 6/10,
 in the shortlist's top 10 and >= 1 point above the weakest holding; the brief's
@@ -29,7 +31,7 @@ invalidation price has already been hit: you MUST answer each one in invalidatio
 with "exit" or "hold" plus the reason; an unanswered one is treated as an exit candidate."""
     output_schema = """{
   "convictions": {"<TICKER>": number -1..1},
-  "equity_exposure": number between 0.95 and 1.00,
+  "equity_exposure": number between 0.97 and 1.00,
   "rationale": "max 80 words: the main bets and why",
   "response_to_risk": "max 50 words, only if responding to a Risk Manager rejection, else empty string",
   "trade_notes": {"<TICKER you add or exit>": {"thesis": "max 25 words", "invalidation": "max 20 words", "invalidation_px": number}},
@@ -108,7 +110,7 @@ with "exit" or "hold" plus the reason; an unanswered one is treated as an exit c
                 notes[t] = {"thesis": str(n.get("thesis", ""))[:250], "invalidation": str(n.get("invalidation", ""))[:200],
                             "invalidation_px": n.get("invalidation_px")}
         return {"convictions": conv,
-                "equity_exposure": round(clip(out.get("equity_exposure"), 0.95, 1.0,
+                "equity_exposure": round(clip(out.get("equity_exposure"), 1 - config.RISK_LIMITS["max_cash_weight"], 1.0,
                                               ctx["macro_view"]["equity_exposure_target"]), 3),
                 "rationale": str(out.get("rationale", ""))[:700],
                 "response_to_risk": str(out.get("response_to_risk", ""))[:400],

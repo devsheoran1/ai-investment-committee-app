@@ -155,7 +155,23 @@ def _download(tickers: list[str], period: str) -> dict[str, pd.DataFrame]:
         fields[f.lower()] = df
     close = fields["close"]
     missing = [t for t in tickers if t not in close.columns or close[t].isna().all()]
-    # Yahoo often drops a few names from a big batch; retry those one by one
+    # Yahoo often drops names from a big batch (Oct 20: 131 of 513). Retry them as a second batch,
+    # in chunks, whatever the count; then one by one for what's still missing.
+    for chunk_start in range(0, len(missing), 100):
+        chunk = missing[chunk_start:chunk_start + 100]
+        try:
+            time.sleep(1.0)
+            again = yf.download(chunk, period=period, auto_adjust=True, progress=False, threads=True,
+                                group_by="column")
+            if again is not None and not again.empty:
+                for f in ("Open", "High", "Low", "Close", "Volume"):
+                    part = again[f] if isinstance(again.columns, pd.MultiIndex) else again[[f]].rename(columns={f: chunk[0]})
+                    part = part[[c for c in part.columns if part[c].notna().any()]]
+                    fields[f.lower()] = fields[f.lower()].drop(columns=list(part.columns), errors="ignore").join(part, how="outer")
+        except Exception:  # noqa: BLE001
+            pass
+    close = fields["close"]
+    missing = [t for t in tickers if t not in close.columns or close[t].isna().all()]
     if 0 < len(missing) <= 40:
         time.sleep(1.0)
         for t in missing:
@@ -205,7 +221,8 @@ def get_market_data(tickers: list[str] | None = None) -> dict[str, pd.DataFrame]
     possible: fresh download (<60 min old) -> last good download -> synthetic."""
     if tickers is None:
         tickers = get_universe()["symbol"].tolist()
-    tickers = list(dict.fromkeys(list(tickers) + [config.BENCHMARK]))
+    # + the ETFs' underlying indices (IPS C6.4 decay check); they are never ranked or traded
+    tickers = list(dict.fromkeys(list(tickers) + [config.BENCHMARK] + sorted(set(config.ETF_UNDERLYING.values()))))
     name = _key("market", tickers)
     try:
         md = _cached(name, lambda: _download(tickers, config.PRICE_HISTORY), max_age_min=60)
@@ -228,6 +245,36 @@ def get_market_data(tickers: list[str] | None = None) -> dict[str, pd.DataFrame]
 def get_prices(tickers: list[str] | None = None) -> pd.DataFrame:
     """Close prices only (kept for callers that just need closes)."""
     return get_market_data(tickers)["close"]
+
+
+def last_known_prices(tickers: list[str]) -> dict[str, float]:
+    """Fallback valuation for held names Yahoo didn't return today (IPS C8.5): last non-null close
+    from prices.csv, else from the most recent cached download. Never used for trading."""
+    out: dict[str, float] = {}
+    if os.path.exists(config.PRICES_CSV):
+        try:
+            p = pd.read_csv(config.PRICES_CSV, index_col=0, usecols=lambda c: c == "date" or c in tickers)
+            for t in p.columns:
+                s = p[t].dropna()
+                if len(s):
+                    out[t] = float(s.iloc[-1])
+        except (ValueError, OSError):
+            pass
+    missing = [t for t in tickers if t not in out]
+    if missing:
+        files = sorted(f for f in os.listdir(config.CACHE_DIR) if "_market_" in f)
+        for f in reversed(files):
+            try:
+                with open(os.path.join(config.CACHE_DIR, f), "rb") as fh:
+                    c = pickle.load(fh)["close"]
+            except Exception:  # noqa: BLE001
+                continue
+            for t in [t for t in missing if t in c.columns and c[t].notna().any()]:
+                out[t] = float(c[t].dropna().iloc[-1])
+            missing = [t for t in tickers if t not in out]
+            if not missing:
+                break
+    return out
 
 
 def export_prices_csv(close: pd.DataFrame) -> None:

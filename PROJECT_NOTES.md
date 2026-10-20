@@ -66,6 +66,30 @@ live init is Oct 22 14:30 Madrid). 7 runs, 20 trades (17 buys / 3 sells). What b
   held name without a price crashed `plan_orders` (and would have dropped out of NAV). → fixed in Stage 1.
 - `orchestrator.py --reset` used to continue into a committee run (= an init). Now it only resets.
 
+## Stage 1 (Oct 20): hard risk limits hold on the executable book
+- Limits now: **cash ≤ 3%** (≥ 97% invested), **hard floor 10 holdings, target 12–15** (init aims for 14),
+  B2 ETF list expanded to 14 leveraged + 4 inverse (screener keeps ADV > $10m).
+- The Risk Manager checks the **post-trade book** (after the 5-trade cap, the $25k minimum and cash upsizing):
+  `committee/risk_manager.py: check_book()` = `analytics.risk_report` (metrics) + `classify()` (verdict). That is the
+  Risk Manager enforcing the limits, per Prof. Manero's rule 3, and it is what the transcript shows.
+  - Hard (always reject; an LLM "approve" is overridden and the override logged): holdings < 10, cash > 3%, name > 20%,
+    sector > 35%, leveraged > 30% total / 15% each / regime cap, inverse > 25% or outside risk-off, vol > 25%, VaR > 5%, C11.
+  - Soft (may reject, C6.3): effective positions < 4, corr > 0.9 among the top 3, a position > 25% of 20d ADV (new ADV check).
+  - Everything else is a warning (beta band, corr > 0.8, concentration...). A rejection on warnings only is overridden to approve.
+  - 3 rounds, then mechanical de-risk: offending positions shrunk pro rata (`analytics.shrink_to_limits`), freed weight
+    to compliant names, then leverage room cut if still needed. Logged as "mechanical de-risk (IPS C6.5)".
+- `plan_orders`: A7 floor on the executable book (an unpaired discretionary exit that leaves < 10 names is dropped;
+  stop-loss / news-veto / C11 exits always go; the next run puts replacement buys first); A12 cash ≤ 3% by upsizing the
+  day's BUYs within the 20% / 35% / ETF caps, then topping up held names if a slot is free; otherwise flagged "CASH".
+- Vol-targeted leverage sleeve: ETF cap = base cap × (1y median 20d vol ÷ current 20d vol), capped at IPS limits, applied in
+  the optimiser; shown per ETF in the risk report (`etf_effective_caps`). Test: doubling vol halves the cap.
+- C6.4 replaces the "held 5 days" exit: a leveraged/inverse ETF with return < 0, > 12% off its peak since entry, or lagging
+  leverage × underlying by > 2% needs the PM's explicit re-approval (same path as invalidation responses).
+- C8.5 robustness: missing tickers re-downloaded in batches; a held name without a live price is valued at its last
+  known close and is untradeable that day (no more `KeyError`).
+- Tests: `tests/test_risk_limits.py` (every hard rule, soft vs warning, override, ETF caps, C11 ladder, A7 cases a/b/c, cash
+  upsizing, missing price).
+
 ## Conflicts and how we resolved them
 
 | # | Conflict | Resolution |
@@ -80,7 +104,7 @@ live init is Oct 22 14:30 Madrid). 7 runs, 20 trades (17 buys / 3 sells). What b
 | C8 | IPS B9 left blank; default is 40% quality/value/low-vol, against A14 (momentum) | Funnel is price-only and momentum-led: 12-1m 35%, 3m 25%, trend 25%, low vol 15%. Quality comes in at Research |
 | C9 | IPS C1.5 macro tilt +0.5 *and* 15% macro weight would count macro twice | Tilt goes through the 15% weight, sized so it equals ±0.5 on the 0–10 composite |
 | C10 | IPS A6 beta "any" vs C1.4 beta bands per regime | Bands are soft concerns for Risk, not hard limits |
-| C11 | IPS A4 −10% drawdown, no de-risking action given ("don't cut in half") | Interpreted as: no new leveraged longs and existing ones exited while below −10%. **Needs your sign-off** |
+| C11 | IPS A4 −10% drawdown, no de-risking action given | ✅ Signed off Oct 20 (graduated): at −7% from peak NAV the leveraged sleeve is capped at 10% and no new leveraged buys; at −10% all leveraged longs are exited and, in risk-off, the inverse hedge is ≥ 15%. Restrictions lift after 2 consecutive days back above −7%. `config.DD_*`, `analytics.drawdown_state`, enforced as a hard limit by the Risk Manager. |
 | C12 | IPS A15 still contains the template text "[STOCK]" | Ignored; mean-variance with the diversification penalty (default) |
 | C13 | IPS C5.3 fixed size bands vs A15 mean-variance | Optimiser sizes; C5.3 used only as the entry filter |
 | C14 | IPS B8 "short recent IPOs" vs long-only stack, B6 1-year history, S&P 500 membership | Not built. Downside only via inverse ETFs in risk-off |
@@ -107,6 +131,12 @@ Not yet built:
 - C1.2 FOMC/CPI/jobs calendar
 
 ## Agent output formats (contracts between teammates)
+
+- **Risk Manager output (Oct 20, owner Dev):** `required_changes` is now a **list** (was a string); new keys
+  `hard_breaches`, `soft_rejects`, `warnings`, `limit_checks` (pass/fail table rows: rule, value, limit, status, kind),
+  `override`, `llm_decision`. `soft_concerns` kept for compatibility (= soft_rejects + warnings).
+- **PM:** `equity_exposure` now 0.97–1.00 (cash ≤ 3%). `invalidated_holdings` may now include leveraged-ETF reviews
+  (`type: leveraged_review`, IPS C6.4) that need an exit/hold answer.
 
 Changed on Oct 17, so tell the owners:
 - **Macro**: regime/tilts now come from rules. The LLM returns `confidence, tilt_override, watch_list, rationale`;
@@ -198,7 +228,7 @@ Real lessons read like: "Oil breakout signal drove XOM above SPY in neutral regi
   test window. Mild, but its OOS numbers are slightly flattering vs Kronos (which normalises per window).
 - Reflection needs 5 trading days of history before the first lesson exists; the live window is short, so expect only a
   handful of graded calls (about 3 to 8 per week). Present it as a demo of the mechanism, not as alpha.
-- A portfolio below 10 names cannot be rebuilt inside the 5-trade cap (hard holdings rule). Only matters if exits shrink the book.
+- Mock runs re-buy a name the day after its stop-loss (no cooldown rule in the IPS). Worth deciding whether stopped-out names sit out N days.
 
 ## Owners
 
