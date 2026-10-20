@@ -22,6 +22,7 @@ import math
 import analytics
 import config
 import data
+import finbert
 import database as db
 import forecaster
 import reflection
@@ -66,7 +67,8 @@ def _preflight(close, tickers) -> dict[str, str]:
     return bad
 
 
-def run_committee(provider: str | None = None, progress=None, execute: bool = False) -> dict:
+def run_committee(provider: str | None = None, progress=None, execute: bool = False,
+                  extra_forced: dict | None = None, _skip_run_limit: bool = False) -> dict:
     emit = progress or (lambda stage, msg: print(f"[{stage}] {msg}"))
     llm = LLMClient(provider)
 
@@ -78,7 +80,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
     db.use_synthetic(synthetic)
     db.init_db()
     db.mark_stale_runs()
-    if not synthetic and llm.provider != "mock" and db.runs_today() >= config.MAX_RUNS_PER_DAY:
+    if not synthetic and llm.provider != "mock" and not _skip_run_limit and db.runs_today() >= config.MAX_RUNS_PER_DAY:
         raise RunLimitError(f"Already {db.runs_today()} runs today; the brief allows {config.MAX_RUNS_PER_DAY}.")
     if synthetic:
         emit("data", "⚠️ Yahoo unreachable — using SYNTHETIC prices in a separate sandbox fund")
@@ -132,7 +134,9 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
     emit("data", f"Fundamentals for {len(stocks)} stocks, news for {len(shortlist)} names")
     fundamentals = data.get_fundamentals(stocks, sectors)
     flags = data.research_flags(fundamentals)
-    news = data.get_news(shortlist)
+    names = dict(zip(universe["symbol"], universe["name"]))
+    ciks = dict(zip(universe["symbol"], universe["cik"]))
+    news = finbert.score_news(data.get_news(shortlist, names, ciks))
     tech = analytics.technicals(close, shortlist)
 
     emit("model", f"Training the LSTM on {len(shortlist)} shortlisted names")
@@ -224,7 +228,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
             px, kind = last_px.get(t), asset_types.get(t, "stock")
             if px and p["avg_cost"] > 0 and px / p["avg_cost"] - 1 <= config.STOP_LOSS:
                 forced[t] = f"stop-loss: {px / p['avg_cost'] - 1:.1%} from cost (IPS A17)"
-            elif (ctx["sentiment"]["sentiment"].get(t) or {}).get("score", 0) <= config.NEWS_SELL_TRIGGER:
+            elif ((ctx["sentiment"]["sentiment"].get(t) or {}).get("score") or 0) <= config.NEWS_SELL_TRIGGER:
                 forced[t] = f"news veto: sentiment {ctx['sentiment']['sentiment'][t]['score']} (IPS C4.4)"
             elif kind == "leveraged_etf" and regime == "risk_off":
                 forced[t] = "leveraged long in risk-off (IPS C5.4)"
@@ -232,6 +236,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
                 forced[t] = f"fund drawdown {drawdown:.1%} at/below {config.DD_HARD:.0%}: all leveraged longs out (IPS A4/C11)"
             elif kind == "inverse_etf" and regime != "risk_off":
                 forced[t] = "inverse hedge no longer needed: regime left risk-off (IPS A11)"
+        forced.update({t: r for t, r in (extra_forced or {}).items() if t in positions})   # intraday news veto (C4.5)
         forced = {t: r for t, r in forced.items() if t not in untradeable}
 
         held_scores = [comp[t]["composite_10"] for t in holdings if t in comp]
@@ -240,7 +245,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         best_unheld = comp[unheld[0]]["composite_10"] if unheld else 0
         eligible_new = [] if no_new_trades else [
             t for t in unheld
-            if comp[t]["composite_10"] >= 7 and comp[t]["quant"] >= 0.2 and rank[t] <= 10
+            if comp[t]["composite_10"] >= 7 and (comp[t]["quant"] or 0) >= 0.2 and rank[t] <= 10
             and comp[t]["composite_10"] >= weakest + 1 and not comp[t]["insufficient_data"]
             and not (asset_types.get(t) == "leveraged_etf" and dd_state["no_new_leveraged"])]
         # IPS A7: below the 12-name target after forced exits -> replacement buys take priority
@@ -253,7 +258,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
                         and comp[t]["composite_10"] >= 5):
                     eligible_new.append(t)
         exit_cands = [t for t in holdings if t in comp and t not in forced and (
-            comp[t]["quant"] < -0.2 or rank[t] > 20 or comp[t]["composite_10"] <= best_unheld - 2)]
+            (comp[t]["quant"] or 0) < -0.2 or rank[t] > 20 or comp[t]["composite_10"] <= best_unheld - 2)]
         ctx.update(eligible_new=eligible_new, exit_candidates=exit_cands, forced_exits=forced)
         relevant = set(holdings) | set(eligible_new) | set(exit_cands) | set(ranked[:10])
         ctx["lessons"] = reflection.lessons_for(relevant, {sectors.get(t) for t in relevant}, regime)
@@ -384,6 +389,41 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         raise
 
 
+def intraday_recheck(provider: str | None = None, progress=None, execute: bool = False) -> dict:
+    """IPS C4.5, the third daily run slot: refresh headlines for HELD names only and re-score them. A held name
+    at <= -0.8 triggers a sell proposal through the normal Risk -> CIO -> Trader path; otherwise the run ends here."""
+    from committee import SentimentAnalyst as _SA
+    emit = progress or (lambda stage, msg: print(f"[{stage}] {msg}"))
+    llm = LLMClient(provider)
+    universe = data.get_universe()
+    db.use_synthetic(False)
+    db.init_db()
+    if llm.provider != "mock" and db.runs_today() >= config.MAX_RUNS_PER_DAY:
+        raise RunLimitError(f"Already {db.runs_today()} runs today; the brief allows {config.MAX_RUNS_PER_DAY}.")
+    held = list(db.get_positions())
+    if not held:
+        return {"status": "no_holdings", "orders": []}
+    names = dict(zip(universe["symbol"], universe["name"]))
+    ciks = dict(zip(universe["symbol"], universe["cik"]))
+    emit("news", f"Refreshing headlines for {len(held)} held names")
+    news = finbert.score_news(data.get_news(held, names, ciks, refresh=True))
+    run_id = db.start_run(llm.provider, "intraday news re-check", "recheck")
+    try:
+        out, model = _SA().run({"tickers": held, "news": news}, llm)
+    except Exception as e:  # noqa: BLE001  D11
+        out, model = {"sentiment": {}, "market_mood": "", "agent_failed": True}, f"FAILED ({str(e)[:100]})"
+    db.log_message(run_id, "Sentiment Analyst", "Intraday news re-check (C4.5)", model, "recheck", 0, out)
+    hits = {t: f"intraday news veto: sentiment {v['score']} ({v.get('key_driver', '')}) (IPS C4.4/C4.5)"
+            for t, v in out.get("sentiment", {}).items() if v.get("score") is not None and v["score"] <= config.NEWS_SELL_TRIGGER}
+    if not hits:
+        db.finish_run(run_id, "recheck_clear", f"Intraday re-check: no held name at <= {config.NEWS_SELL_TRIGGER}.")
+        emit("done", "Re-check clear: no sell proposal")
+        return {"run_id": run_id, "status": "recheck_clear", "orders": [], "usage": llm.usage}
+    db.finish_run(run_id, "recheck_triggered", f"Severe news on {', '.join(hits)}: full committee convened for a sell proposal.")
+    emit("news", f"Severe news on {', '.join(hits)}: convening the committee")
+    return run_committee(provider, progress, execute=execute, extra_forced=hits, _skip_run_limit=True)
+
+
 def execute_run(run_id: int) -> dict:
     """Brief §8.2 Execution Agent: commit an approved proposal to SQLite."""
     prop = db.get_proposal(run_id)
@@ -468,8 +508,12 @@ def _post_trade_weights(positions, cash, orders, px) -> dict[str, float]:
 def _reason(o, comp, pm, risk) -> str:
     """One-line reasoning stored with every trade (Brief §1, §8.1 'reason' column)."""
     c = comp.get(o["ticker"], {})
-    scores = (f"composite {c.get('composite_10', '-')}/10 (Q {c.get('quant')}, S {c.get('sentiment')}, "
-              f"R {c.get('research')})") if c else "not in today's shortlist"
+    na = c.get("na") or []
+    scores = (f"composite {c.get('composite_10', '-')}/10 (Q {c.get('quant') if c.get('quant') is not None else 'n/a'}, "
+              f"S {c.get('sentiment') if c.get('sentiment') is not None else 'n/a'}, "
+              f"R {c.get('research') if c.get('research') is not None else 'n/a'})"
+              + (f"; no signal from {', '.join(na)}, weight redistributed pro rata (C5.2)" if na else "")) \
+        if c else "not in today's shortlist"
     move = f"weight {o['current_weight']:.1%} -> {o['target_weight']:.1%}"
     if o["forced"]:
         return f"FORCED EXIT — {o['forced_reason']}; {scores}"
@@ -484,6 +528,7 @@ if __name__ == "__main__":
     ap.add_argument("--execute", action="store_true", help="commit the approved trades immediately")
     ap.add_argument("--reset", action="store_true", help="wipe the fund back to $1M cash")
     ap.add_argument("--snapshot", action="store_true", help="only revalue the portfolio (after-close run)")
+    ap.add_argument("--recheck", action="store_true", help="intraday news re-check on held names (C4.5)")
     args = ap.parse_args()
     if args.reset:
         data.get_market_data(data.get_universe()["symbol"].tolist())
@@ -494,7 +539,8 @@ if __name__ == "__main__":
     if args.snapshot:
         print(f"NAV ${snapshot_only():,.0f}")
         raise SystemExit
-    res = run_committee(args.provider, execute=args.execute)
+    res = intraday_recheck(args.provider, execute=args.execute) if args.recheck else \
+        run_committee(args.provider, execute=args.execute)
     print(json.dumps({k: v for k, v in res.items() if k != "orders"}, indent=2, default=str))
     print("\nOrders:")
     for o in res["orders"]:

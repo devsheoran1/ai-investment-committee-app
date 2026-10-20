@@ -101,6 +101,8 @@ def _download_sp500() -> pd.DataFrame:
         "symbol": t["Symbol"].astype(str).str.strip().str.replace(".", "-", regex=False),  # BRK.B -> BRK-B
         "name": t["Security"].astype(str),
         "sector": t["GICS Sector"].astype(str),
+        "industry": t["GICS Sub-Industry"].astype(str),                      # industry momentum (B9)
+        "cik": t["CIK"].astype(str).str.zfill(10),                           # SEC EDGAR 8-K feed (C4.2)
         "asset_type": "stock",
     })
     if len(df) < 450:
@@ -116,7 +118,7 @@ def get_universe() -> pd.DataFrame:
     if os.path.exists(path):
         cached = pd.read_csv(path)
         age = (dt.date.today() - dt.date.fromisoformat(str(cached["fetched"].iloc[0]))).days
-        if age <= 7:
+        if age <= 7 and {"industry", "cik"} <= set(cached.columns):
             stocks, DATA_SOURCE["universe"] = cached, f"S&P 500 (Wikipedia, {cached['fetched'].iloc[0]})"
     if stocks is None:
         try:
@@ -132,11 +134,14 @@ def get_universe() -> pd.DataFrame:
                                        "sector": list(_FALLBACK_UNIVERSE.values()), "asset_type": "stock"})
                 DATA_SOURCE["universe"] = f"FALLBACK 18 stocks (Wikipedia failed: {str(e)[:60]})"
     etfs = pd.DataFrame(
-        [{"symbol": t, "name": f"{d} leveraged", "sector": LEVERAGED_SECTOR, "asset_type": "leveraged_etf"}
-         for t, d in config.LEVERAGED_ETFS.items()]
-        + [{"symbol": t, "name": f"{d} inverse", "sector": INVERSE_SECTOR, "asset_type": "inverse_etf"}
-           for t, d in config.INVERSE_ETFS.items()])
-    out = pd.concat([stocks[["symbol", "name", "sector", "asset_type"]], etfs], ignore_index=True)
+        [{"symbol": t, "name": d, "sector": LEVERAGED_SECTOR, "industry": LEVERAGED_SECTOR, "cik": None,
+          "asset_type": "leveraged_etf"} for t, d in config.LEVERAGED_ETFS.items()]
+        + [{"symbol": t, "name": d, "sector": INVERSE_SECTOR, "industry": INVERSE_SECTOR, "cik": None,
+            "asset_type": "inverse_etf"} for t, d in config.INVERSE_ETFS.items()])
+    for col in ("industry", "cik"):
+        if col not in stocks.columns:
+            stocks[col] = None
+    out = pd.concat([stocks[["symbol", "name", "sector", "industry", "cik", "asset_type"]], etfs], ignore_index=True)
     return out.drop_duplicates("symbol").reset_index(drop=True)
 
 
@@ -385,52 +390,121 @@ def research_flags(fundamentals: dict[str, dict]) -> dict[str, list[str]]:
 # --------------------------------------------------------------------------- #
 # news (Brief §4: research news every morning before the open)
 # --------------------------------------------------------------------------- #
-def _parse_rss(xml_text: str, max_age_days: int, n: int) -> list[str]:
+MADRID_TZ = "Europe/Madrid"
+SEC_USER_AGENT = os.getenv("SEC_USER_AGENT", "AIInvestmentCommittee research-project@example.com")  # SEC asks for a contact
+
+
+def _to_madrid(ts) -> str:
+    from zoneinfo import ZoneInfo
+    return ts.astimezone(ZoneInfo(MADRID_TZ)).strftime("%Y-%m-%d %H:%M") if ts is not None else ""
+
+
+def _parse_feed(xml_text: str, max_age_days: int, default_source: str) -> list[dict]:
+    """RSS (<item>) or Atom (<entry>) -> [{title, source, ts (Madrid), ts_utc, url}] within the age window."""
     root = ElementTree.fromstring(xml_text)
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=max_age_days)
     out = []
-    for item in root.iter("item"):
-        title = (item.findtext("title") or "").strip()
-        when = item.findtext("pubDate")
+    atom = "{http://www.w3.org/2005/Atom}"
+    items = list(root.iter("item")) or list(root.iter(f"{atom}entry"))
+    for item in items:
+        title = (item.findtext("title") or item.findtext(f"{atom}title") or "").strip()
+        when = item.findtext("pubDate") or item.findtext(f"{atom}updated")
+        ts = None
         try:
-            ts = parsedate_to_datetime(when) if when else None
+            ts = parsedate_to_datetime(when) if when and not when[:4].isdigit() else \
+                dt.datetime.fromisoformat(when.replace("Z", "+00:00")) if when else None
         except (TypeError, ValueError):
             ts = None
         if not title or (ts is not None and ts < cutoff):
             continue
-        day = ts.strftime("%m-%d") if ts else "?"
-        out.append(f"[{day}] {title[:140]}")
-        if len(out) >= n:
-            break
+        src = (item.findtext("source") or "").strip() or default_source
+        if default_source == "Google News" and " - " in title:            # Google appends " - Publisher"
+            title, pub = title.rsplit(" - ", 1)
+            src = src if src != "Google News" else pub
+        link = item.findtext("link") or ""
+        if not link:
+            le = item.find(f"{atom}link")
+            link = le.get("href", "") if le is not None else ""
+        out.append({"title": title[:160], "source": src[:40], "ts": _to_madrid(ts),
+                    "ts_utc": ts.isoformat() if ts else "", "url": link})
     return out
 
 
-def _fetch_news(ticker: str, n: int = 4, max_age_days: int = 3) -> list[str]:
+def _fetch_news(ticker: str, name: str = "", cik: str | None = None, n: int = 10, max_age_days: int = 5) -> list[dict]:
+    """IPS C4.2 free stack: Yahoo Finance RSS, Google News (general + Reuters/Bloomberg/WSJ), SEC EDGAR 8-K.
+    Up to n headlines over max_age_days, newest first, each with source and Madrid timestamp."""
     import requests
-    yahoo = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
-    google = f"https://news.google.com/rss/search?q={ticker}+stock+when:{max_age_days}d&hl=en-US&gl=US&ceid=US:en"
-    for url in (yahoo, google):
+    from urllib.parse import quote_plus
+    q_name = quote_plus(f'"{name}"') if name and name != ticker else quote_plus(ticker)
+    feeds = [
+        (f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US", "Yahoo Finance", _HTTP_HEADERS),
+        (f"https://news.google.com/rss/search?q={quote_plus(ticker)}+stock+when:{max_age_days}d&hl=en-US&gl=US&ceid=US:en",
+         "Google News", _HTTP_HEADERS),
+        (f"https://news.google.com/rss/search?q={q_name}+(site:reuters.com+OR+site:bloomberg.com+OR+site:wsj.com)"
+         f"+when:{max_age_days}d&hl=en-US&gl=US&ceid=US:en", "Google News", _HTTP_HEADERS),
+    ]
+    if cik:
+        feeds.append((f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=8-K&dateb=&owner=include"
+                      f"&count=10&output=atom", "SEC EDGAR 8-K",
+                      {"User-Agent": SEC_USER_AGENT, "Accept-Encoding": "gzip, deflate"}))
+    items, seen = [], set()
+    for url, src, headers in feeds:
         try:
-            r = requests.get(url, headers=_HTTP_HEADERS, timeout=12)
-            if r.status_code == 200:
-                items = _parse_rss(r.text, max_age_days, n)
-                if items:
-                    return items
+            r = requests.get(url, headers=headers, timeout=12)
+            if r.status_code != 200:
+                continue
+            for it in _parse_feed(r.text, max_age_days, src):
+                key = "".join(ch for ch in it["title"].lower() if ch.isalnum())[:80]
+                if key and key not in seen:
+                    seen.add(key)
+                    items.append(it)
         except Exception:  # noqa: BLE001
             continue
-    return []
+    # relevance: Yahoo's per-ticker feed mixes in market-wide stories; keep headlines that name the company or
+    # ticker (SEC filings are the company's own by definition). Max 4 per source so one feed can't crowd out the rest.
+    keys = _name_keys(ticker, name)
+    items = [it for it in items if it["source"] == "SEC EDGAR 8-K" or any(k in it["title"].lower() for k in keys)]
+    items.sort(key=lambda it: it["ts_utc"], reverse=True)
+    per_src, out = {}, []
+    for it in items:
+        if per_src.get(it["source"], 0) < 4:
+            out.append(it)
+            per_src[it["source"]] = per_src.get(it["source"], 0) + 1
+    return out[:n]
 
 
-def get_news(tickers: list[str]) -> dict[str, list[str]]:
-    """Up to 4 recent headlines per ticker. Refreshed hourly (IPS C4.5 intraday
-    re-check). An all-empty result is never cached, so one bad fetch can't blank
-    out sentiment for the whole day (the bug in the Oct 10-11 runs)."""
+_SUFFIXES = {"inc", "inc.", "corp", "corp.", "corporation", "company", "co", "co.", "holdings", "plc", "ltd", "group",
+             "the", "class", "a", "b", "c", "(the)", "&", "incorporated", "limited"}
+
+
+def _name_keys(ticker: str, name: str) -> list[str]:
+    """Lower-case tokens a relevant headline should contain: the ticker and the company's distinctive name."""
+    keys = [f"({ticker.lower()})", f" {ticker.lower()} ", f"{ticker.lower()}:", f"${ticker.lower()}"]
+    words = [w for w in name.replace(",", " ").split() if w.lower() not in _SUFFIXES]
+    if words:
+        first = words[0].lower()
+        keys.append(first if len(first) > 3 else " ".join(w.lower() for w in words[:2]))
+    if len(ticker) >= 3:
+        keys.append(ticker.lower() + " ")
+    return keys
+
+
+def get_news(tickers: list[str], names: dict | None = None, ciks: dict | None = None,
+             refresh: bool = False) -> dict[str, list[dict]]:
+    """Up to 10 headlines per ticker (5 days). Refreshed hourly, or on demand (refresh=True: the C4.5 intraday
+    re-check). An all-empty result is never cached, so one bad fetch can't blank sentiment for the day."""
+    names, ciks = names or {}, ciks or {}
+
+    def one(t):
+        c = ciks.get(t)
+        return _fetch_news(t, names.get(t, ""), c if isinstance(c, str) and c.strip("0") and c != "None" else None)
+
     def fetch_all():
         with ThreadPoolExecutor(max_workers=8) as ex:
-            return dict(zip(tickers, ex.map(_fetch_news, tickers)))
+            return dict(zip(tickers, ex.map(one, tickers)))
     if is_synthetic():
         return {t: [] for t in tickers}
-    return _cached(_key("news", tickers), fetch_all, max_age_min=60,
+    return _cached(_key("news_v2", tickers), fetch_all, max_age_min=0 if refresh else 60,
                    keep_if=lambda v: any(v.values()))
 
 

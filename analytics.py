@@ -127,32 +127,36 @@ def to_10(x: float) -> float:
 
 
 def composite_scores(tickers, sectors, asset_types, research, quant, sentiment, tilts, regime) -> dict[str, dict]:
+    """IPS C5.2 blend. An agent with no signal for a name (score None: no news, failed call, ETF without
+    fundamentals) is left out and its weight is redistributed pro rata to the others (Oct 20)."""
     W = config.SIGNAL_WEIGHTS
     out = {}
     for t in tickers:
         kind = asset_types.get(t, "stock")
-        q = float((quant.get(t) or {}).get("score", 0) or 0)
-        s = float((sentiment.get(t) or {}).get("score", 0) or 0)
+        qv = (quant.get(t) or {}).get("score")
+        sv = (sentiment.get(t) or {}).get("score")
+        q = None if qv is None else float(qv)
+        s_ = None if sv is None else float(sv)
         if kind == "stock":
             r_row = research.get(t) or {}
-            r = float(r_row.get("score", 0) or 0)
-            m = TILT_TO_SCORE.get(str(tilts.get(sectors.get(t), "neutral")).lower(), 0.0)
-            comp = W["research"] * r + W["quant"] * q + W["sentiment"] * s + W["macro"] * m
             insufficient = r_row.get("rating") == "insufficient_data"
-        else:
-            # IPS C2.5: ETFs have no fundamentals -> re-weight Quant/Sentiment/Macro to 100%
-            r = None
-            if kind == "leveraged_etf":
-                m = {"risk_on": 1.0, "neutral": 0.0, "risk_off": -1.0}[regime]
-            else:
-                m = 1.0 if regime == "risk_off" else -1.0
-            tot = W["quant"] + W["sentiment"] + W["macro"]
-            comp = (W["quant"] * q + W["sentiment"] * s + W["macro"] * m) / tot
-            insufficient = False
-        comp = float(np.clip(comp, -1, 1))
-        out[t] = {"type": kind, "research": None if r is None else round(r, 2), "quant": round(q, 2),
-                  "sentiment": round(s, 2), "macro": round(m, 2), "composite": round(comp, 3),
-                  "composite_10": to_10(comp), "insufficient_data": insufficient}
+            rv = r_row.get("score")
+            r = None if (rv is None or insufficient or not r_row) else float(rv)
+            m = TILT_TO_SCORE.get(str(tilts.get(sectors.get(t), "neutral")).lower(), 0.0)
+        else:                                       # IPS C2.5: ETFs have no fundamentals
+            r, insufficient = None, False
+            m = {"risk_on": 1.0, "neutral": 0.0, "risk_off": -1.0}[regime] if kind == "leveraged_etf" else \
+                (1.0 if regime == "risk_off" else -1.0)
+        parts = {"quant": q, "sentiment": s_, "research": r, "macro": m}
+        avail = {k: v for k, v in parts.items() if v is not None}
+        tot = sum(W[k] for k in avail) or 1.0
+        weights_used = {k: round(W[k] / tot, 3) for k in avail}
+        comp = float(np.clip(sum(W[k] * v for k, v in avail.items()) / tot, -1, 1))
+        na = [k for k, v in parts.items() if v is None]
+        out[t] = {"type": kind, "research": None if r is None else round(r, 2), "quant": None if q is None else round(q, 2),
+                  "sentiment": None if s_ is None else round(s_, 2), "macro": round(m, 2), "composite": round(comp, 3),
+                  "composite_10": to_10(comp), "insufficient_data": insufficient, "na": na,
+                  "weights_used": weights_used}
     return out
 
 

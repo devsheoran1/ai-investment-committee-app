@@ -90,6 +90,22 @@ live init is Oct 22 14:30 Madrid). 7 runs, 20 trades (17 buys / 3 sells). What b
 - Tests: `tests/test_risk_limits.py` (every hard rule, soft vs warning, override, ETF caps, C11 ladder, A7 cases a/b/c, cash
   upsizing, missing price).
 
+## Stage 2 (Oct 20): Sentiment produces real signal (C4.1–C4.6)
+- News: up to 10 headlines per name over 5 days, each with source + Madrid timestamp + URL, from Yahoo Finance RSS,
+  Google News (general + a Reuters/Bloomberg/WSJ query) and SEC EDGAR 8-K (per-company Atom feed, CIK from the S&P 500 table).
+  A relevance filter drops headlines that don't name the company/ticker (Yahoo's per-ticker feed mixes in market stories);
+  max 4 per source. SEC requires a contact in the User-Agent: set `SEC_USER_AGENT` in `.env` (placeholder by default).
+- FinBERT (`ProsusAI/finbert`, local, MPS) scores every headline (P(pos) − P(neg)), cached per headline in
+  `data/cache/finbert_headlines.pkl`. The LLM sees the FinBERT scores and judges surprise vs expectation; final = LLM score,
+  both logged. ~9 s for ~40 names on the M2 (17 s first load).
+- No headlines → `score: null`, shown "n/a" (never 0.0). The composite redistributes the missing agent's weight pro rata
+  (C5.2) and the trade reason says so. A failed call → null for every name (counts toward D12).
+- Sanity guard: > 70% of names with headlines scored exactly 0.0 → one retry on gpt-oss-120b (logged in the model field).
+- Intraday re-check (C4.5, run slot 3): `python orchestrator.py --recheck` / dashboard button. Headlines refreshed for held
+  names only; a held name ≤ −0.8 convenes the full committee with that name as a forced exit (Risk → CIO → Trader).
+- Mock coverage on Oct 20 data: 42 of 43 names with a non-zero score (was ~0 in the dry run).
+- Tests: `tests/test_sentiment.py`.
+
 ## Conflicts and how we resolved them
 
 | # | Conflict | Resolution |
@@ -132,6 +148,10 @@ Not yet built:
 
 ## Agent output formats (contracts between teammates)
 
+- **Sentiment output (Oct 20, owner Mer):** `sentiment[t].score` may be **null** (no news / no answer = n/a). New keys
+  `finbert` (avg FinBERT of the name's headlines), `llm_score`, `n_headlines`, `based_on` (headlines the score rests on),
+  optional `retried_on`. Input `news[t]` is now a list of dicts `{title, source, ts (Madrid), ts_utc, url, finbert}`
+  (was a list of strings). Composite rows gain `na` and `weights_used`; `quant`/`sentiment`/`research` may be null.
 - **Risk Manager output (Oct 20, owner Dev):** `required_changes` is now a **list** (was a string); new keys
   `hard_breaches`, `soft_rejects`, `warnings`, `limit_checks` (pass/fail table rows: rule, value, limit, status, kind),
   `override`, `llm_decision`. `soft_concerns` kept for compatibility (= soft_rejects + warnings).

@@ -21,7 +21,7 @@ import database as db
 import reflection
 import report
 from agents import BRIEF_ROLES, ROSTER
-from orchestrator import RunLimitError, execute_run, run_committee, snapshot_only
+from orchestrator import RunLimitError, execute_run, intraday_recheck, run_committee, snapshot_only
 
 st.set_page_config(page_title=config.FUND_NAME, page_icon="🏛️", layout="wide")
 
@@ -221,6 +221,20 @@ with tab_floor:
                 status.update(label="Meeting failed", state="error")
                 st.exception(e)
         load_market.clear()
+        st.rerun()
+
+    if db.get_positions() and st.button("📰 Intraday news re-check (held names, uses a run slot)",
+                                        help="IPS C4.5: refresh headlines for held names only; a held name at <= -0.8 "
+                                             "triggers a sell proposal through Risk -> CIO -> Trader."):
+        with st.status("Re-checking news on held names…", expanded=True) as status:
+            try:
+                res = intraday_recheck(provider, progress=lambda stage, msg: status.write(f"**{stage}** — {msg}"))
+                status.update(label=f"Re-check: {res['status']}", state="complete")
+                if res.get("run_id"):
+                    st.session_state["selected_run"] = res["run_id"]
+            except RunLimitError as e:
+                status.update(label="Run limit reached", state="error")
+                st.error(str(e))
         st.rerun()
 
     runs = db.get_runs()
