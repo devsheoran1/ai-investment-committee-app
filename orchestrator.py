@@ -799,8 +799,15 @@ if __name__ == "__main__":
         db.init_db(reset=True)
         print(f"Fund reset to ${config.STARTING_CAPITAL:,.0f} cash in {db.current_db_name()}. No committee run.")
         raise SystemExit
+    def _publish() -> None:
+        """Push finance.db / trades.csv / reports/ so the Streamlit Cloud viewer updates."""
+        if os.getenv("PUBLISH", "1") == "1" and not os.getenv("FUND_DB_PATH") and db.current_db_name() == "finance.db":
+            import subprocess
+            subprocess.run(["bash", os.path.join(config.BASE_DIR, "publish.sh")], cwd=config.BASE_DIR, check=False)
+
     if args.snapshot:
         print(f"NAV ${snapshot_only():,.0f}")
+        _publish()
         raise SystemExit
     if args.replay:
         print(json.dumps(replay(args.replay, args.provider or "mock"), indent=1, default=str))
@@ -814,3 +821,5 @@ if __name__ == "__main__":
     print("\nOrders:")
     for o in res["orders"]:
         print(f"  {o['side']:4} {o['shares']:>6} {o['ticker']:<6} @ {o['price']:>9.2f}  ${o['notional']:>11,.0f}  {o['reason'][:90]}")
+    if args.execute and res.get("trades"):
+        _publish()

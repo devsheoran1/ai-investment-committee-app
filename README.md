@@ -30,7 +30,7 @@ The project runs on the Miniconda Python at `/opt/miniconda3/bin/python3` (it al
 
 ```bash
 cd ~/Downloads/ai_investment_committee
-/opt/miniconda3/bin/python3 -m pip install -r requirements.txt
+/opt/miniconda3/bin/python3 -m pip install -r requirements.txt -r requirements-local.txt   # laptop: both files; Streamlit Cloud uses requirements.txt only (VIEWER_MODE=1)
 cp .env.example .env        # paste GROQ_API_KEY=... (free: https://console.groq.com/keys)
 /opt/miniconda3/bin/python3 -m streamlit run app.py
 ```

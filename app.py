@@ -22,8 +22,25 @@ import database as db
 import reflection
 import report
 import ui
-from agents import ROSTER
-from orchestrator import RunLimitError, execute_run, intraday_recheck, run_committee, snapshot_only
+
+# Viewer mode (Streamlit Cloud): read-only, never imports the heavy model/LLM stack.
+VIEWER = os.getenv("VIEWER_MODE") == "1"
+if not VIEWER:
+    try:
+        from orchestrator import RunLimitError, execute_run, intraday_recheck, run_committee, snapshot_only
+    except ImportError:
+        VIEWER = True
+try:
+    from agents import ROSTER
+except ImportError:
+    ROSTER = []
+
+def publish() -> None:
+    """Push finance.db / trades.csv / reports/ so the cloud viewer updates (live fund only)."""
+    if not REPLAY and os.getenv("PUBLISH", "1") == "1" and not os.getenv("FUND_DB_PATH"):
+        import subprocess
+        subprocess.Popen(["bash", os.path.join(config.BASE_DIR, "publish.sh")], cwd=config.BASE_DIR)
+
 
 st.set_page_config(page_title="AI Investment Committee", page_icon="🏛️", layout="wide")
 ui.inject()
@@ -108,11 +125,15 @@ with st.sidebar:
     n_today = db.trades_today()
     c2.metric("Trades (init day)" if n_today > config.MAX_TRADES_PER_DAY else "Trades today",
               f"{n_today}" if n_today > config.MAX_TRADES_PER_DAY else f"{n_today}/{config.MAX_TRADES_PER_DAY}")
-    if not REPLAY:
+    if VIEWER:
+        _last = runs["finished_at"].dropna().max() if len(runs) and "finished_at" in runs else None
+        st.info(f"Viewer: updated after each laptop run, last update {db.madrid_et(_last) if _last else 'n/a'}")
+    if not REPLAY and not VIEWER:
         if st.button("📅 After-close snapshot (21:45)", width="stretch",
                      help="Brief 'Advance Day': reprice holdings and save today's snapshot. No agents, no trades."):
             load_market.clear()
             st.toast(f"Snapshot saved · NAV ${snapshot_only():,.0f}")
+            publish()
             st.rerun()
         if positions and st.button("📰 Intraday news re-check", width="stretch",
                                    help="IPS C4.5, uses a run slot: held names only; <= -0.8 triggers a sell proposal."):
@@ -281,7 +302,7 @@ with tab_room:
         st.error("⛔ HALT file present in the repo root: you can run the analysis, execution is disabled.")
     left, right = st.columns([1, 3])
     with left:
-        run_clicked = (not REPLAY) and st.button("▶️ Run committee", type="primary", width="stretch")
+        run_clicked = (not REPLAY and not VIEWER) and st.button("▶️ Run committee", type="primary", width="stretch")
         st.caption("Init day: 10-20 buys, cap exempt. Daily: max 5 trades. Max 3 runs/day.")
     timeline_box = right.empty()
     timeline_box.markdown(ui.timeline(STEPS, 0), unsafe_allow_html=True)
@@ -355,7 +376,7 @@ with tab_room:
             st.dataframe(po[["name", "side", "shares", "price", "notional", "target_weight", "reason"]], hide_index=True, width="stretch",
                          column_config={"notional": st.column_config.NumberColumn(format="$%,.0f"),
                                         "target_weight": st.column_config.NumberColumn("target", format="%.3f")})
-        if r.loc[run_id, "status"] == "proposed" and not REPLAY:
+        if r.loc[run_id, "status"] == "proposed" and not REPLAY and not VIEWER:
             st.caption(f"Proposed {db.madrid_et(r.loc[run_id, 'finished_at'])}. Execution reprices at the latest price; "
                        f"proposals older than 2 h are refused.")
             if halted:
@@ -366,6 +387,7 @@ with tab_room:
                     try:
                         out = execute_run(run_id)
                         st.toast(f"Executed {len(out['trades'])} trade(s) · NAV ${out['nav']:,.0f}")
+                        publish()
                     except RuntimeError as e:
                         st.error(str(e))
                         st.stop()
@@ -532,7 +554,7 @@ with tab_tr:
                 st.download_button("⬇️ trades.csv (Brief §10.4)", fh, file_name=os.path.basename(config.TRADES_CSV))
     st.markdown("#### Forum post (17:00–18:00 Madrid)")
     st.code(report.forum_post(), language=None)
-    if st.button("Build daily report + Word summary"):
+    if not VIEWER and st.button("Build daily report + Word summary"):
         st.session_state["final_doc"] = (report.daily_report(), report.final_summary())
     if st.session_state.get("final_doc"):
         with open(st.session_state["final_doc"][1], "rb") as fh:

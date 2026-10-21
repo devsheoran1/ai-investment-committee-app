@@ -11,9 +11,7 @@ CLAUDE_old_zip.skill
 __pycache__/
 data/cache/
 data/fund.db
-finance.db
-reports/
-trades.csv
 archive/
 trades_replay.csv
 backups/
+reports/replay/

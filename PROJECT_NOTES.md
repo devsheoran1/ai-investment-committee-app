@@ -420,3 +420,8 @@ Real lessons read like: "Oil breakout signal drove XOM above SPY in neutral regi
 | C8 Trader (rule-based execution) | Marina |
 | Devil's Advocate, Trade Rationale Writer, Morning Brief | team (unassigned) |
 | Presentation intro + ending | Dev + Jayesh |
+
+## Oct 21: Streamlit Cloud read-only viewer
+- Cloud runs `app.py` from `main` with `VIEWER_MODE=1` (also auto-on if orchestrator imports fail): no Run/Execute/Snapshot/Reset/re-check/report buttons; sidebar shows last update time.
+- `requirements.txt` = light viewer deps; `requirements-local.txt` = torch/transformers/lightgbm/openai etc. Laptop installs both. `huggingface_hub` pin removed.
+- `finance.db`, `trades.csv`, `reports/` now tracked (replay reports still ignored). `publish.sh` commits+pushes them; called automatically after live `--execute` (with trades), `--snapshot`, and the app's Execute/Snapshot buttons. Opt out with `PUBLISH=0`; never fires with `FUND_DB_PATH` set or on the replay fund.

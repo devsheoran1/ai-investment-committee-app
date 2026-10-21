@@ -1,26 +1,13 @@
-# Brief §11: streamlit, pandas, plotly + what the agents and models need
+# Cloud viewer (Streamlit Cloud, VIEWER_MODE=1): light deps only.
+# Local laptop (runs/trades): pip install -r requirements.txt -r requirements-local.txt
 streamlit>=1.40
 pandas>=2.0
 numpy>=1.26
-scipy>=1.11
 plotly>=5.22
-yfinance>=0.2.50
+python-docx>=1.1
 requests>=2.31
+# imported by the viewer's data/analytics/config modules (all small, pure wheels)
+scipy>=1.11
+yfinance>=0.2.50
 lxml>=5.0
-openai>=1.50
 python-dotenv>=1.0
-torch>=2.2
-python-docx>=1.1          # final 15-day Word summary (Brief §11)
-# Kronos-mini forecaster (vendor/kronos); versions verified working on Oct 18 2026
-einops==0.8.2
-huggingface_hub==2.2.0
-safetensors==0.8.0
-tqdm==4.70.0
-# FinBERT headline scorer (Stage 2, Oct 20)
-transformers==4.57.6
-# LightGBM for the horse race (Stage 4). On macOS it needs OpenMP: conda install -c conda-forge llvm-openmp
-lightgbm==4.7.0
-# Word report charts (Stage 7)
-matplotlib==3.11.2
-# Dashboard screenshots (Stage 9, dev only)
-playwright==1.64.0

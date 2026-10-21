@@ -1,0 +1,16 @@
+# Laptop only: agents, models, reports. Install together with requirements.txt.
+openai>=1.50
+torch>=2.2
+# Kronos-mini forecaster (vendor/kronos)
+einops==0.8.2
+huggingface_hub           # unpinned: 2.2.0 pin conflicted with transformers<1.0
+safetensors==0.8.0
+tqdm==4.70.0
+# FinBERT headline scorer
+transformers==4.57.6
+# LightGBM horse race. On macOS: conda install -c conda-forge llvm-openmp
+lightgbm==4.7.0
+# Word report charts
+matplotlib==3.11.2
+# Dashboard screenshots (dev only)
+playwright==1.64.0
