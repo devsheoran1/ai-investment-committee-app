@@ -98,6 +98,8 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
     db.use_synthetic(synthetic)
     db.init_db()
     db.mark_stale_runs()
+    if not replay and not synthetic:
+        record_prior_close(market["close"], emit)
     if not synthetic and llm.provider != "mock" and not _skip_run_limit and not replay and db.runs_today() >= config.MAX_RUNS_PER_DAY:
         raise RunLimitError(f"Already {db.runs_today()} runs today; the brief allows {config.MAX_RUNS_PER_DAY}.")
     if synthetic:
@@ -722,8 +724,37 @@ def replay(days: int = 20, provider: str | None = "mock", progress=None) -> dict
         db._DB["path"] = config.DB_PATH
 
 
+def record_prior_close(close, emit=print, polygon=None) -> str | None:
+    """Oct 21: at run start, book the last completed session's OFFICIAL close if it isn't in daily_snapshots yet.
+    Polygon grouped (previous day, free tier) + yfinance close, <= 0.5% cross-check (prices.SNAP_TOL)."""
+    import nyse_calendar as cal
+    if not db.is_initialized():
+        return None
+    d = cal.last_completed_session()
+    day = d.isoformat()
+    if db.has_close(day):
+        return None
+    if db.trades_after(cal.close_dt(d)):   # book changed since that close: can't rebuild it honestly
+        emit("data", f"Close of {day} not booked: trades executed after it (book has changed)")
+        return None
+    tickers = list(db.get_positions()) + [config.BENCHMARK]
+    row = close.loc[close.index.normalize() == pd.Timestamp(day)]
+    yf_px = {t: float(row[t].iloc[-1]) for t in tickers if len(row) and t in row and pd.notna(row[t].iloc[-1])}
+    snap = px_src.snapshot_prices(tickers, yf_px, day, last_verified=data.last_known_prices(tickers),
+                                  **({"polygon": polygon} if polygon else {}))
+    px = {t: v["px"] for t, v in snap.items() if v.get("px")}
+    if config.BENCHMARK not in px:
+        emit("data", f"Close of {day} not booked: no {config.BENCHMARK} price")
+        return None
+    nav = db.record_snapshot(None, px, px[config.BENCHMARK], day=day, kind="close",
+                             price_sources={t: {"source": v["source"], "flag": v["flag"]} for t, v in snap.items()})
+    emit("data", f"Official close {day} booked · NAV ${nav:,.0f}")
+    return day
+
+
 def snapshot_only() -> float:
-    """After-close run (IPS D3, 21:45 Madrid) / Brief 'Advance Day': revalue and log, no agents."""
+    """Intraday mark (21:45 Madrid = 15:45 ET, NOT the close): revalue and log, no agents. The official close is
+    booked by record_prior_close() at the start of the next committee run."""
     universe = data.get_universe()
     pos = db.get_positions()
     tickers = list(pos) + [config.BENCHMARK]

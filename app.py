@@ -129,10 +129,11 @@ with st.sidebar:
         _last = runs["finished_at"].dropna().max() if len(runs) and "finished_at" in runs else None
         st.info(f"Viewer: updated after each laptop run, last update {db.madrid_et(_last) if _last else 'n/a'}")
     if not REPLAY and not VIEWER:
-        if st.button("📅 After-close snapshot (21:45)", width="stretch",
-                     help="Brief 'Advance Day': reprice holdings and save today's snapshot. No agents, no trades."):
+        if st.button("📅 Intraday mark (not the close)", width="stretch",
+                     help="21:45 Madrid = 15:45 ET, before the US close. Reprices holdings, no agents, no trades. "
+                          "The official close is booked automatically at the start of the next committee run."):
             load_market.clear()
-            st.toast(f"Snapshot saved · NAV ${snapshot_only():,.0f}")
+            st.toast(f"Intraday mark saved · NAV ${snapshot_only():,.0f}")
             publish()
             st.rerun()
         if positions and st.button("📰 Intraday news re-check", width="stretch",

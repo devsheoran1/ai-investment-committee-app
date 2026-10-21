@@ -432,3 +432,9 @@ Real lessons read like: "Oil breakout signal drove XOM above SPY in neutral regi
 - Agent failure fallbacks (D11): PM = 2×composite + C5.3 + forced exits; DA = proceed; **CIO = approve Risk-passed orders meeting C5.3 + forced exits** (was: reject → forced exits only on daily runs). Logged as "CIO — rules fallback"; cards show "⚠ Agent failed → …". Message content gains a `fallback` field (schema add, non-breaking).
 - Decision Room: Python steps shown as Screener (Marina), Regime Engine (Rima), Model Lab (Jayesh; horse race + LSTM merged, model card in expander), tagged "Rules engine". Display-only; DB still logs agent "System".
 - Single-source prices: snapshot path = Polygon grouped(today) + yfinance, never Finnhub. Snapshot at 21:45 Madrid = 15:45 ET, before the close, so Polygon free tier returns nothing → every name yfinance-only → SINGLE. Finnhub failures were swallowed silently; now logged.
+
+## Oct 21 (late): official close booking
+- `record_prior_close()` runs at the start of every live committee run: if the last completed NYSE session (America/New_York, `nyse_calendar.last_completed_session`, early closes respected) has no `kind='close'` row, it books it from Polygon grouped (prev day) + yfinance close, <= 0.5% cross-check (`SNAP_TOL`; > 0.5% → Polygon, flagged). Skipped if trades executed after that close (book changed) or fund not initialised.
+- `daily_snapshots.kind` added ('close' | 'intraday', migration). Intraday marks never overwrite a close row.
+- 21:45 button renamed "Intraday mark (not the close)" (21:45 Madrid = 15:45 ET most weeks). Finnhub = live trade prices only. Finnhub key verified working (AAPL quote OK).
+- Tests: `tests/test_prior_close.py` (DST gap week, half day, idempotence, book-changed skip).

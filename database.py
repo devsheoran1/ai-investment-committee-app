@@ -127,6 +127,8 @@ def init_db(reset: bool = False) -> None:
                 c.execute(f"ALTER TABLE transactions ADD COLUMN {col} TEXT")
         if "price_sources" not in {r[1] for r in c.execute("PRAGMA table_info(daily_snapshots)")}:
             c.execute("ALTER TABLE daily_snapshots ADD COLUMN price_sources TEXT")   # Oct 21: per-holding source JSON
+        if "kind" not in {r[1] for r in c.execute("PRAGMA table_info(daily_snapshots)")}:
+            c.execute("ALTER TABLE daily_snapshots ADD COLUMN kind TEXT DEFAULT 'intraday'")   # 'close' = official close
         mcols = {r[1] for r in c.execute("PRAGMA table_info(messages)")}
         for col, typ in (("system_prompt", "TEXT"), ("user_prompt", "TEXT"), ("raw_output", "TEXT"),
                          ("tokens", "INTEGER"), ("latency_s", "REAL")):
@@ -280,24 +282,43 @@ def execute_trade(run_id: int, symbol: str, side: str, shares: int, price: float
 
 
 def record_snapshot(run_id: int | None, last_px: dict[str, float], benchmark_px: float,
-                    price_sources: dict | None = None) -> float:
+                    price_sources: dict | None = None, day: str | None = None, kind: str = "intraday") -> float:
+    """kind='close' = official NYSE close of `day` (never overwritten by an intraday mark); 'intraday' = today's mark."""
     pos = get_positions()
     cash = get_cash()
     invested = sum(p["shares"] * last_px[t] for t, p in pos.items() if t in last_px)
     nav = cash + invested
     import nyse_calendar
-    if not nyse_calendar.is_trading_day(today()):          # Stage 8: never log a phantom weekend/holiday day
+    d = day or today()
+    if not nyse_calendar.is_trading_day(d):          # Stage 8: never log a phantom weekend/holiday day
         return nav
+    if kind == "intraday" and has_close(d):
+        return nav                                    # the official close row wins
     with conn() as c:
-        c.execute("INSERT INTO daily_snapshots (date, ts, total_equity, cash, invested, benchmark_px, n_positions, run_id) "
-                  "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET ts=excluded.ts, "
+        c.execute("INSERT INTO daily_snapshots (date, ts, total_equity, cash, invested, benchmark_px, n_positions, run_id, kind) "
+                  "VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET ts=excluded.ts, "
                   "total_equity=excluded.total_equity, cash=excluded.cash, invested=excluded.invested, "
-                  "benchmark_px=excluded.benchmark_px, n_positions=excluded.n_positions, run_id=excluded.run_id",
-                  (today(), _now(), nav, cash, invested, benchmark_px, len(pos), run_id))
+                  "benchmark_px=excluded.benchmark_px, n_positions=excluded.n_positions, run_id=excluded.run_id, "
+                  "kind=excluded.kind",
+                  (d, _now(), nav, cash, invested, benchmark_px, len(pos), run_id, kind))
         if price_sources is not None:
-            c.execute("UPDATE daily_snapshots SET price_sources=? WHERE date=?", (json.dumps(price_sources), today()))
-        c.execute("UPDATE simulation SET total_portfolio_value=?, current_date=? WHERE id=1", (nav, today()))
+            c.execute("UPDATE daily_snapshots SET price_sources=? WHERE date=?", (json.dumps(price_sources), d))
+        if day is None:
+            c.execute("UPDATE simulation SET total_portfolio_value=?, current_date=? WHERE id=1", (nav, today()))
     return nav
+
+
+def has_close(day: str) -> bool:
+    with conn() as c:
+        r = c.execute("SELECT kind FROM daily_snapshots WHERE date=?", (day,)).fetchone()
+    return bool(r) and r[0] == "close"
+
+
+def trades_after(ts: dt.datetime) -> int:
+    """Trades executed after an aware datetime (transactions store Madrid date + hour)."""
+    cut = ts.astimezone(MADRID).strftime("%Y-%m-%d %H:%M:%S")
+    with conn() as c:
+        return c.execute("SELECT COUNT(*) FROM transactions WHERE date || ' ' || hour > ?", (cut,)).fetchone()[0]
 
 
 def get_trades() -> pd.DataFrame:
