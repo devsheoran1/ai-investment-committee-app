@@ -116,7 +116,7 @@ with st.sidebar:
     st.caption(f"{'REPLAY fund (read-only)' if REPLAY else 'Live fund'} · {db.current_db_name()}")
     st.markdown(f"**{db.today()}** · Madrid {db.now():%H:%M}")
     st.caption(f"Last close in data: {close.index[-1].date()} · {source}")
-    providers = list(config.PROVIDERS)
+    providers = [p for p in config.PROVIDERS if p != "gemini"]   # Gemini = Morning Brief only, never the agents
     provider = st.selectbox("AI brain", providers, index=providers.index(config.LLM_PROVIDER)
                             if config.LLM_PROVIDER in providers else 0,
                             help="groq = free cloud (default). mock = rule-based, no API calls.")
@@ -166,7 +166,7 @@ if synthetic:
 import prices as px_src
 _stale = {t: px_src.STALE for t in db.get_positions() if t not in last_px}
 px_src.QUALITY.update({**quality, "flags": {**quality.get("flags", {}), **_stale}})
-(st.warning if px_src.QUALITY["flags"] else st.info)("**Data quality** · " + px_src.quality_line())
+_quality_line = px_src.quality_line()   # shown in a collapsed expander at the bottom of the page
 
 ret = nav / config.STARTING_CAPITAL - 1
 spy_ret = None
@@ -214,12 +214,14 @@ else:
         inv = db.latest_buy_reflection(t) or {}
         spark = close[t].dropna().tail(20).round(2).tolist() if t in close.columns else []
         rows.append({"Name": data.label(t), "Sector": sector_of.get(t, "?"), "Cap": cap_bucket(t), "Shares": p["shares"],
-                     "Weight": 100 * mv / nav, "Cost": p["avg_cost"], "Price": px, "P&L $": p["shares"] * (px - p["avg_cost"]),
+                     "Weight": 100 * mv / nav, "Cost": p["avg_cost"], "Total cost": p["shares"] * p["avg_cost"],
+                     "Market value": mv, "Price": px, "P&L $": p["shares"] * (px - p["avg_cost"]),
                      "P&L %": 100 * (px / p["avg_cost"] - 1), "20 days": spark, "Exit below": inv.get("invalidation_px")})
     pos_df = pd.DataFrame(rows).sort_values("Weight", ascending=False)
     st.dataframe(pos_df, hide_index=True, width="stretch", height=min(42 + 35 * len(pos_df), 420), column_config={
         "Weight": st.column_config.ProgressColumn("Weight", format="%.1f%%", min_value=0, max_value=20),
-        "Cost": st.column_config.NumberColumn(format="$%.2f"), "Price": st.column_config.NumberColumn(format="$%.2f"),
+        "Cost": st.column_config.NumberColumn(format="$%.2f"),
+        "Total cost": st.column_config.NumberColumn(format="$%,.0f"), "Market value": st.column_config.NumberColumn(format="$%,.0f"), "Price": st.column_config.NumberColumn(format="$%.2f"),
         "P&L $": st.column_config.NumberColumn(format="$%+,.0f"), "P&L %": st.column_config.NumberColumn(format="%+.1f%%"),
         "20 days": st.column_config.LineChartColumn("20 days"), "Exit below": st.column_config.NumberColumn(format="$%.2f")})
 
@@ -231,6 +233,42 @@ tab_room, tab_pf, tab_perf, tab_tr, tab_com = st.tabs(["Decision Room", "Portfol
 STEPS = ["Morning Brief", "Macro", "Research / Quant / Sentiment", "PM", "Devil's Advocate", "Risk", "CIO", "Trader"]
 STAGE_TO_STEP = {"data": 0, "screen": 0, "brief": 0, "model": 1, "reflection": 1, "analysis": 2, "proposal": 3,
                  "devils_advocate": 4, "proposal_answers_da": 4, "risk_review": 5, "decision": 6, "done": 8}
+
+
+RULES_CARDS = {"Screening funnel": ("Screener", "Screening funnel (IPS Part B)"),
+               "Regime rules": ("Regime Engine", "Regime rules (IPS C1.3)"),
+               "Model horse race": ("Model Lab", "Model horse race + LSTM model card (C3.4)"),
+               "Quant desk": ("Model Lab", "Model horse race + LSTM model card (C3.4)")}
+
+
+def rules_cards(msgs: list[dict]) -> list[dict]:
+    """Display only: rename the Python "System" steps and merge horse race + LSTM card into one Model Lab card."""
+    out, lab = [], None
+    for m in msgs:
+        key = next((k for k in RULES_CARDS if m["agent"] == "System" and m["title"].startswith(k)), None)
+        if not key:
+            out.append(m)
+            continue
+        name, title = RULES_CARDS[key]
+        if name != "Model Lab":
+            out.append({**m, "agent": name, "title": title})
+            continue
+        part = "race" if key == "Model horse race" else "lstm"
+        if lab is None:
+            lab = {**m, "agent": name, "title": title, "content": {}, "system_prompt": None}
+            out.append(lab)
+        lab["content"][part] = m["content"]
+    return out
+
+
+def model_lab_line(c: dict) -> str:
+    race = c.get("race") or {}
+    w = {k: v for k, v in (race.get("weights") or {}).items() if v > 0}
+    if not race:
+        return "Horse race skipped: LSTM only." if c.get("lstm") else "No model output this run."
+    if not w:
+        return "No model beat the always-up baseline → technicals only."
+    return "Models trusted this run: " + ", ".join(f"{k} {v:.0%}" for k, v in w.items()) + " (rest weight 0)."
 
 
 def summarize(m: dict) -> tuple[str, list[str], str]:
@@ -282,6 +320,16 @@ def summarize(m: dict) -> tuple[str, list[str], str]:
                                                           f"{len(c.get('rejected') or [])} rejected"], c.get("execution_notes", "")
     if a == "Trade Rationale Writer":
         return "info", [], " ".join(f"{t}: {x}" for t, x in (c.get("rationales") or {}).items())[:600]
+    if a == "Screener":
+        f = c.get("funnel") or {}
+        return "info", [f"top screen: {', '.join(list((c.get('top_10_screen') or {}))[:5])}"], (
+            f"{f.get('universe')} names → {f.get('passed_hard_filters')} pass filters → "
+            f"{f.get('stage1_kept', '')} after Stage 1 → {f.get('shortlist_total')} shortlisted.")
+    if a == "Regime Engine":
+        return {"risk_on": "bullish", "risk_off": "bearish"}.get(c.get("regime"), "neutral"), [], \
+            f"Raw {c.get('raw_regime')} → {c.get('regime')}. {c.get('note') or ''}".strip()
+    if a == "Model Lab":
+        return "info", [], model_lab_line(c)
     if a == "System":
         if "scoreboard" in c:
             return "info", [], c.get("scoreboard_line", "")
@@ -291,8 +339,8 @@ def summarize(m: dict) -> tuple[str, list[str], str]:
                                 f"{f.get('stage1_kept', '')} after Stage 1 → {f.get('shortlist_total')} shortlisted.")
         if "raw_regime" in c:
             return "info", [], f"Regime rules: raw {c.get('raw_regime')} → {c.get('regime')} ({c.get('note')})."
-        return "info", [], json.dumps({k: v for k, v in c.items() if not isinstance(v, (list, dict))})[:300]
-    return "info", [], json.dumps(c, default=str)[:300]
+        return "info", [], ", ".join(f"{k}: {v}" for k, v in c.items() if not isinstance(v, (list, dict)))[:300]
+    return "info", [], ", ".join(f"{k}: {v}" for k, v in c.items() if not isinstance(v, (list, dict)))[:300]
 
 
 with tab_room:
@@ -337,11 +385,13 @@ with tab_room:
         if r.loc[run_id, "summary"]:
             st.markdown(f"<div class='card'><div class='who'>CIO minutes</div><div class='msg'>{ui.esc(r.loc[run_id, 'summary'])}</div></div>",
                         unsafe_allow_html=True)
-        msgs = messages_of(run_id)
+        msgs = rules_cards(messages_of(run_id))
         prop = db.get_proposal(run_id)
         has_da_answer = any(x["agent"] == "Portfolio Manager" and x["stage"] == "proposal_answers_da" for x in msgs)
         for m in msgs:
             stance, nums, msg = summarize(m)
+            if m["content"].get("agent_failed"):
+                stance, msg = "info", f"⚠ Agent failed → {m['content'].get('fallback', 'rules fallback')}. " + (msg or "")
             ui.agent_card(m["agent"], m["title"], m["model"], m.get("latency_s"), stance, nums, msg)
             c = m["content"]
             if m["agent"] == "Risk Manager" and c.get("limit_checks"):
@@ -360,6 +410,12 @@ with tab_room:
                 conv = pd.Series(c.get("convictions") or {}).sort_values(ascending=False)
                 if len(conv):
                     st.caption("Top convictions: " + ", ".join(f"{t} {v:+.2f}" for t, v in conv.head(8).items()))
+            if m["agent"] == "Model Lab":
+                with st.expander("Model card · horse race scoreboard + LSTM"):
+                    if (c.get("race") or {}).get("scoreboard_line"):
+                        st.caption(c["race"]["scoreboard_line"])
+                    if c.get("lstm"):
+                        st.json(c["lstm"], expanded=False)
             with st.expander(f"What {m['agent']} saw · raw output"):
                 if m.get("system_prompt"):
                     st.markdown("**System prompt**")
@@ -604,3 +660,7 @@ with tab_com:
                                    for m in fails]), hide_index=True, width="stretch")
     else:
         st.caption("No agent failures recorded.")
+
+st.write("")
+with st.expander("Data quality", expanded=False):
+    (st.warning if px_src.QUALITY["flags"] else st.info)(_quality_line)

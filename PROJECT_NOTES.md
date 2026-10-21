@@ -425,3 +425,10 @@ Real lessons read like: "Oil breakout signal drove XOM above SPY in neutral regi
 - Cloud runs `app.py` from `main` with `VIEWER_MODE=1` (also auto-on if orchestrator imports fail): no Run/Execute/Snapshot/Reset/re-check/report buttons; sidebar shows last update time.
 - `requirements.txt` = light viewer deps; `requirements-local.txt` = torch/transformers/lightgbm/openai etc. Laptop installs both. `huggingface_hub` pin removed.
 - `finance.db`, `trades.csv`, `reports/` now tracked (replay reports still ignored). `publish.sh` commits+pushes them; called automatically after live `--execute` (with trades), `--snapshot`, and the app's Execute/Snapshot buttons. Opt out with `PUBLISH=0`; never fires with `FUND_DB_PATH` set or on the replay fund.
+
+## Oct 21 (pm): UI + resilience pass
+- Theme lightened (navy #1B3354, panels #234068, accent #6BA3EC). Data quality moved to a collapsed expander at the page bottom. Positions: Total cost + Market value.
+- Agents always run on LLM_PROVIDER (groq); `gemini` removed from the AI-brain dropdown and remapped in `_agent_provider` (runs #2-3 had gone out on gemini via the dropdown). Gemini = Morning Brief only.
+- Agent failure fallbacks (D11): PM = 2×composite + C5.3 + forced exits; DA = proceed; **CIO = approve Risk-passed orders meeting C5.3 + forced exits** (was: reject → forced exits only on daily runs). Logged as "CIO — rules fallback"; cards show "⚠ Agent failed → …". Message content gains a `fallback` field (schema add, non-breaking).
+- Decision Room: Python steps shown as Screener (Marina), Regime Engine (Rima), Model Lab (Jayesh; horse race + LSTM merged, model card in expander), tagged "Rules engine". Display-only; DB still logs agent "System".
+- Single-source prices: snapshot path = Polygon grouped(today) + yfinance, never Finnhub. Snapshot at 21:45 Madrid = 15:45 ET, before the close, so Polygon free tier returns nothing → every name yfinance-only → SINGLE. Finnhub failures were swallowed silently; now logged.

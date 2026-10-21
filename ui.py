@@ -1,6 +1,6 @@
 """
-Reusable dashboard components (Stage 9). Institutional look: navy background #0B1F3A, panels #12294A, one accent blue
-#3B82F6 + lighter blues, green/red only for P&L. Inter for text, Source Serif for big numbers. One Plotly template.
+Reusable dashboard components (Stage 9). Institutional look: navy background #1B3354, panels #234068, one soft accent blue
+#6BA3EC + lighter blues, green/red only for P&L. Inter for text, Source Serif for big numbers. One Plotly template.
 """
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ import plotly.graph_objects as go
 import plotly.io as pio
 import streamlit as st
 
-NAVY, PANEL, PANEL2, LINE = "#0B1F3A", "#12294A", "#183457", "#25456E"
-ACCENT, BLUE2, BLUE3, BLUE4 = "#3B82F6", "#60A5FA", "#93C5FD", "#BFDBFE"
-TEXT, MUTED = "#E6EDF7", "#8EA3C0"
+NAVY, PANEL, PANEL2, LINE = "#1B3354", "#234068", "#2B4C78", "#3A5F8E"   # Oct 21: lightened
+ACCENT, BLUE2, BLUE3, BLUE4 = "#6BA3EC", "#8BB9F2", "#A9CBF6", "#CFE1FA"
+TEXT, MUTED = "#F2F6FC", "#AFC2DB"
 GREEN, RED, AMBER = "#22C55E", "#EF4444", "#F59E0B"
 SERIES = [ACCENT, BLUE3, BLUE2, BLUE4, "#1D4ED8", "#2563EB", "#7DD3FC", "#A5B4FC"]
 
@@ -23,8 +23,11 @@ AGENT_STYLE = {   # role colour, owner (IPS C0.2), initials
     "Devil's Advocate": ("#F59E0B", "team", "DA"), "Risk Manager": ("#EF4444", "Dev", "RM"),
     "CIO": ("#BFDBFE", "Mer", "CIO"), "Trader": ("#22C55E", "Marina", "TR"),
     "Reflection Analyst": ("#7DD3FC", "team", "RF"), "Trade Rationale Writer": ("#93C5FD", "team", "TW"),
-    "System": ("#8EA3C0", "Python", "PY"),
+    "System": ("#AFC2DB", "Python", "PY"),
+    "Screener": ("#8BB9F2", "Marina", "⏷"), "Regime Engine": ("#A9CBF6", "Rima", "◔"),
+    "Model Lab": ("#6BA3EC", "Jayesh", "⚗"),
 }
+RULES_ENGINES = {"Screener", "Regime Engine", "Model Lab"}
 
 CSS = f"""
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap" rel="stylesheet">
@@ -44,7 +47,7 @@ h1, h2, h3, h4 {{ font-family: 'Inter', sans-serif; color: {TEXT}; letter-spacin
 .chip {{ display:inline-block; padding: 2px 8px; border-radius: 6px; font-size: 0.72rem; font-weight: 600; margin-right: 6px; }}
 .card {{ background: {PANEL}; border: 1px solid {LINE}; border-radius: 12px; padding: 14px 16px; margin-bottom: 10px; }}
 .card .head {{ display:flex; align-items:center; gap:10px; }}
-.avatar {{ width: 36px; height: 36px; border-radius: 50%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size: 0.78rem; color: {NAVY}; flex-shrink: 0; }}
+.avatar {{ width: 36px; height: 36px; border-radius: 50%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size: 0.85rem; color: {NAVY}; flex-shrink: 0; }}
 .card .who {{ font-weight: 600; color: {TEXT}; }} .card .meta {{ color: {MUTED}; font-size: 0.75rem; }}
 .card .msg {{ color: {TEXT}; margin-top: 8px; font-size: 0.92rem; line-height: 1.45; }}
 .nums {{ margin-top: 6px; color: {BLUE3}; font-size: 0.8rem; }}
@@ -112,7 +115,7 @@ def agent_card(agent: str, title: str, model: str, latency: float | None, stance
     nums = " · ".join(esc(n) for n in numbers if n)
     st.markdown(f'''<div class="card"><div class="head"><div class="avatar" style="background:{color}">{esc(ini)}</div>
 <div><div class="who">{esc(agent)} {chip(stance) if stance else ""}</div>
-<div class="meta">{esc(title)} · owner {esc(owner)} · {esc(model)}{lat}</div></div></div>
+<div class="meta">{esc(title)} · owner {esc(owner)} · {esc("Rules engine" if agent in RULES_ENGINES else model)}{lat}</div></div></div>
 {f'<div class="nums">{nums}</div>' if nums else ''}<div class="msg">{esc(message)}</div></div>''', unsafe_allow_html=True)
 
 

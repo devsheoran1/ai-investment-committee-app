@@ -73,13 +73,19 @@ def _preflight(close, tickers) -> dict[str, str]:
     return bad
 
 
+def _agent_provider(provider: str | None) -> str:
+    """Agents run on LLM_PROVIDER (.env, groq). Gemini is reserved for the Morning Brief."""
+    p = (provider or config.LLM_PROVIDER).lower()
+    return config.LLM_PROVIDER if p == "gemini" and config.LLM_PROVIDER != "gemini" else p
+
+
 def run_committee(provider: str | None = None, progress=None, execute: bool = False,
                   extra_forced: dict | None = None, _skip_run_limit: bool = False, asof=None) -> dict:
     """asof (replay, IPS D6-D9): decide on data strictly BEFORE that date (previous close); news/brief n/a,
     fundamentals frozen (today's snapshot), estimate revisions dropped, Kronos skipped, lighter LSTM walk-forward."""
     replay = asof is not None
     emit = progress or (lambda stage, msg: print(f"[{stage}] {msg}"))
-    llm = LLMClient(provider)
+    llm = LLMClient(_agent_provider(provider))
 
     # ------------------------------------------------------- 1. data + guards -- #
     emit("data", "Loading S&P 500 universe + leveraged ETFs and downloading prices")
@@ -246,6 +252,8 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
             failed.append(agent.name)
             out, model = agent.validate({}, {**ctx, **extra}), f"FAILED ({str(e)[:120]})"
             out["agent_failed"] = True
+            out["fallback"] = FALLBACK_NOTE.get(agent.name, "neutral defaults")
+            emit(stage, f"{agent.name} failed ({str(e)[:60]}) -> rules fallback")
         db.log_message(run_id, agent.name, agent.title, model, stage, rnd, out, prompt=getattr(agent, "last_call", None))
         return out
 
@@ -432,6 +440,15 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         cio = call(ChiefInvestmentOfficer, "decision", proposal=proposal, risk_report=rr,
                    risk_decision=risk, round=rnd, turnover=round(turnover, 3), orders=orders,
                    no_new_trades=no_new_trades)
+        if cio.get("agent_failed"):
+            # CIO down: rules decide. Keep what Risk passed and meets the C5.3 entry rule, plus forced exits.
+            ok = risk["decision"] == "approve" and not no_new_trades
+            orders = [o for o in orders if o["forced"] or (ok and (o["side"] == "SELL" or init_mode or o["ticker"] in positions
+                                                                    or o["ticker"] in eligible_new))]
+            cio["decision"] = "approve" if ok and orders else "reject"
+            cio["committee_summary"] = (f"CIO unavailable, rules fallback: Risk {risk['decision']}; {len(orders)} order(s) kept "
+                                        f"(Risk-passed, C5.3 entry rule, forced exits).")
+            db.log_message(run_id, "CIO", "CIO — rules fallback (agent failed)", "rules", "decision", 0, cio)
         if cio["decision"] != "approve":
             # keep the portfolio, but forced risk exits (stop-loss, news veto, ...) still go through
             orders = [o for o in orders if o["forced"]]
@@ -490,12 +507,19 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         raise
 
 
+FALLBACK_NOTE = {
+    "CIO": "rules: approve Risk-passed orders meeting C5.3, plus forced exits",
+    "Portfolio Manager": "rules: convictions = 2 x composite, C5.3 entry rule, forced exits",
+    "Devil's Advocate": "rules: no objections (proceed)",
+}
+
+
 def intraday_recheck(provider: str | None = None, progress=None, execute: bool = False) -> dict:
     """IPS C4.5, the third daily run slot: refresh headlines for HELD names only and re-score them. A held name
     at <= -0.8 triggers a sell proposal through the normal Risk -> CIO -> Trader path; otherwise the run ends here."""
     from committee import SentimentAnalyst as _SA
     emit = progress or (lambda stage, msg: print(f"[{stage}] {msg}"))
-    llm = LLMClient(provider)
+    llm = LLMClient(_agent_provider(provider))
     universe = data.get_universe()
     db.use_synthetic(False)
     db.init_db()
@@ -603,7 +627,7 @@ def _write_rationales(run_id, facts, prop, provider):
     ctx = {"facts": facts, "all_tickers": list(data.names_map())}
     w = TradeRationaleWriter()
     try:
-        out, model = w.run(ctx, LLMClient(provider))
+        out, model = w.run(ctx, LLMClient(_agent_provider(provider)))
     except Exception as e:  # noqa: BLE001
         out, model = {"rationales": {f["ticker"]: template(f) for f in facts}, "fallback_used_for": [f["ticker"] for f in facts]}, \
             f"FAILED ({str(e)[:100]}): template"

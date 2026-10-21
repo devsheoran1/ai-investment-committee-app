@@ -134,9 +134,15 @@ def finnhub_quote(ticker: str) -> float | None:
         return None
     try:
         _FINNHUB.wait()
-        c = requests.get("https://finnhub.io/api/v1/quote", params={"symbol": ticker, "token": key}, timeout=10).json().get("c")
-        return float(c) if c and c > 0 else None
-    except Exception:  # noqa: BLE001
+        r = requests.get("https://finnhub.io/api/v1/quote", params={"symbol": ticker, "token": key}, timeout=10)
+        j = r.json() if r.content else {}
+        c = j.get("c") if isinstance(j, dict) else None
+        if not (c and c > 0):   # bad key / 429 / unsupported symbol used to fail silently -> "single-source"
+            log.warning("Finnhub %s: HTTP %s %s", ticker, r.status_code, str(j.get("error") if isinstance(j, dict) else j)[:80])
+            return None
+        return float(c)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Finnhub %s failed: %s", ticker, str(e)[:80])
         return None
 
 
