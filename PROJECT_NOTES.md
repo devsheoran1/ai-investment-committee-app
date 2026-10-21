@@ -438,3 +438,15 @@ Real lessons read like: "Oil breakout signal drove XOM above SPY in neutral regi
 - `daily_snapshots.kind` added ('close' | 'intraday', migration). Intraday marks never overwrite a close row.
 - 21:45 button renamed "Intraday mark (not the close)" (21:45 Madrid = 15:45 ET most weeks). Finnhub = live trade prices only. Finnhub key verified working (AAPL quote OK).
 - Tests: `tests/test_prior_close.py` (DST gap week, half day, idempotence, book-changed skip).
+
+## Oct 21: testing-handoff fixes (mock/tests only)
+- Performance: one point per session, cumulative return in %, %-formatted axes; daily-return / rolling-vol charts show placeholder text until enough sessions.
+- Risk numbers labelled by state: Portfolio tab = CURRENT (executed book only); Decision Room limit grid = PROPOSED / EXECUTED post-trade book.
+- Trades: decided time, price source, price time; executions outside 09:30–close ET are labelled "last close (off-hours)" (`nyse_calendar.is_open`).
+- Execution is idempotent: `db.claim_run` atomically moves proposed → executing; rerun/double click/race = one execution.
+- Beta: risk_report used ddof 1/0 (+0.4% bias), fixed; matches an independent 1y OLS slope. New `notional_exposure` + `etf_notional` (e.g. FAS 10% × 3 = 30%).
+- CIO → Risk: if the order list changes after Risk's verdict, Risk re-checks the new post-trade book (stage `risk_recheck`); hard breach = forced exits only.
+- Decision Room: status row (each stage ok/fallback/failed, CIO decision, risk verdict, executed yes/no); agent minutes behind a diagnostics toggle.
+- Committee reliability shows "x of n valid".
+- **CONTRACT CHANGE (flag to team):** `trades.csv` gains 3 columns: `decided_at, price_source, price_time`. `transactions` table gains `price_source, price_time` (auto-migrated). risk_report JSON gains `notional_exposure`, `etf_notional`.
+- Tests: `tests/test_handoff.py` (7 tests, all pass); existing suites pass.

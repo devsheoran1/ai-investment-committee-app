@@ -50,3 +50,9 @@ def last_completed_session(now: dt.datetime | None = None) -> dt.date:
     if is_trading_day(d) and n >= close_dt(d):
         return d
     return previous_trading_day(d)
+
+
+def is_open(when: dt.datetime) -> bool:
+    """True while the NYSE regular session (09:30 ET to the official close) is running."""
+    n = when.astimezone(ET)
+    return is_trading_day(n.date()) and dt.datetime.combine(n.date(), dt.time(9, 30), tzinfo=ET) <= n < close_dt(n.date())

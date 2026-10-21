@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS positions (
 CREATE TABLE IF NOT EXISTS transactions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT, hour TEXT, action TEXT, symbol TEXT, shares INTEGER, price REAL,
-    total REAL, reason TEXT, run_id INTEGER, cost REAL, name TEXT, signals TEXT, proposed_at TEXT
+    total REAL, reason TEXT, run_id INTEGER, cost REAL, name TEXT, signals TEXT, proposed_at TEXT,
+    price_source TEXT, price_time TEXT
 );
 CREATE TABLE IF NOT EXISTS daily_snapshots (
     date TEXT PRIMARY KEY, ts TEXT, total_equity REAL, cash REAL, invested REAL,
@@ -122,7 +123,7 @@ def init_db(reset: bool = False) -> None:
         c.executescript(SCHEMA)
         # forward-compatible migrations for DBs created before Oct 20
         cols = {r[1] for r in c.execute("PRAGMA table_info(transactions)")}
-        for col in ("name", "signals", "proposed_at"):
+        for col in ("name", "signals", "proposed_at", "price_source", "price_time"):
             if col not in cols:
                 c.execute(f"ALTER TABLE transactions ADD COLUMN {col} TEXT")
         if "price_sources" not in {r[1] for r in c.execute("PRAGMA table_info(daily_snapshots)")}:
@@ -155,6 +156,13 @@ def finish_run(run_id: int, status: str, summary: str, proposal: dict | None = N
         else:
             c.execute("UPDATE runs SET finished_at=?, status=?, summary=? WHERE id=?",
                       (_now(), status, summary, run_id))
+
+
+def claim_run(run_id: int, frm: str = "proposed", to: str = "executing") -> bool:
+    """Atomic compare-and-set on a run's status: only one caller can move it from `frm` to `to`.
+    Stops the same proposal executing twice (Streamlit rerun, double click, two tabs)."""
+    with conn() as c:
+        return c.execute("UPDATE runs SET status=? WHERE id=? AND status=?", (to, run_id, frm)).rowcount == 1
 
 
 def set_run_status(run_id: int, status: str) -> None:
@@ -237,7 +245,8 @@ def trades_today() -> int:
 
 def execute_trade(run_id: int, symbol: str, side: str, shares: int, price: float, reason: str,
                   meta: dict | None = None, name: str | None = None, signals: str | None = None,
-                  proposed_at: str | None = None) -> dict:
+                  proposed_at: str | None = None, price_source: str | None = None,
+                  price_time: str | None = None) -> dict:
     shares = int(shares)
     t = now()
     with conn() as c:
@@ -268,9 +277,9 @@ def execute_trade(run_id: int, symbol: str, side: str, shares: int, price: float
                   "inception_date=COALESCE(inception_date, ?) WHERE id=1",
                   (cash, t.date().isoformat(), t.date().isoformat()))
         c.execute("INSERT INTO transactions (date, hour, action, symbol, shares, price, total, reason, run_id, cost, "
-                  "name, signals, proposed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                  "name, signals, proposed_at, price_source, price_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                   (t.date().isoformat(), t.strftime("%H:%M:%S"), side, symbol, shares, round(price, 4),
-                   round(total, 2), reason, run_id, cost, name, signals, proposed_at))
+                   round(total, 2), reason, run_id, cost, name, signals, proposed_at, price_source, price_time))
         tid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
         if meta is not None and shares > 0:    # every executed trade is a call the committee will be graded on
             c.execute("INSERT INTO reflections (decided_at, run_id, ticker, action, entry_px, thesis, invalidation, "
@@ -376,14 +385,17 @@ def export_trades_csv(path: str | None = None) -> str:
     side, price, shares, total, reason (plain English, E2), signals (scores, kept out of the reason)."""
     path = path or config.TRADES_CSV
     with conn() as c:
-        rows = c.execute("SELECT date, hour, symbol, name, action, price, shares, total, reason, signals "
+        rows = c.execute("SELECT date, hour, symbol, name, action, price, shares, total, reason, signals, "
+                         "proposed_at, price_source, price_time "
                          "FROM transactions ORDER BY id").fetchall()
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["date", "hour_madrid", "ticker", "name", "side", "price", "shares", "total", "reason", "signals"])
+        w.writerow(["date", "hour_madrid", "ticker", "name", "side", "price", "shares", "total", "reason", "signals",
+                    "decided_at", "price_source", "price_time"])
         for r in rows:
             w.writerow([r["date"], r["hour"], r["symbol"], r["name"] or "", r["action"], f"{r['price']:.2f}",
-                        r["shares"], f"{r['total']:.2f}", r["reason"], r["signals"] or ""])
+                        r["shares"], f"{r['total']:.2f}", r["reason"], r["signals"] or "",
+                        r["proposed_at"] or "", r["price_source"] or "", r["price_time"] or ""])
     return path
 
 

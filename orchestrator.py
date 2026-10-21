@@ -439,6 +439,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         turnover = sum(o["notional"] for o in orders) / nav / 2
 
         # ------------------------------------------------------------ 6. CIO -- #
+        risk_checked = order_key(orders)          # the exact book Risk signed off
         cio = call(ChiefInvestmentOfficer, "decision", proposal=proposal, risk_report=rr,
                    risk_decision=risk, round=rnd, turnover=round(turnover, 3), orders=orders,
                    no_new_trades=no_new_trades)
@@ -457,6 +458,22 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
             if no_new_trades:
                 cio["committee_summary"] = (f"Insufficient information (IPS D12): {', '.join(silent)} gave no signal. "
                                             f"No new trades; forced exits only. " + cio["committee_summary"])
+
+        # Any change to the order list after Risk's verdict (CIO edit, rules fallback, forced-only cut) goes
+        # back to Risk on the new post-trade book. A hard breach there = forced exits only.
+        if orders and needs_risk_recheck(risk_checked, orders):
+            post_chk = _post_trade_weights(positions, cash, orders, last_px)
+            rr2 = RiskManager.check_book(post_chk, close, sectors, asset_types, regime, nav_drawdown=drawdown, adv=adv,
+                                         nav=nav, caps=caps, dd_state=dd_state, current_weights=current_w)
+            ok2 = not rr2["breaches"]
+            db.log_message(run_id, "Risk Manager", "Chief Risk Officer — re-check after CIO change", "rules",
+                           "risk_recheck", 0, {"decision": "approve" if ok2 else "reject", "hard_breaches": rr2["breaches"],
+                                               "soft_rejects": rr2["soft_rejects"], "warnings": rr2["warnings"],
+                                               "limit_checks": rr2["limit_checks"],
+                                               "rationale": "Order list changed after Risk approval; re-checked the new book. "
+                                                            + ("All hard limits pass." if ok2 else "Hard breach: forced exits only.")})
+            if not ok2:
+                orders = [o for o in orders if o["forced"]]
 
         # ---------------------------------------------------------- 7. Trader -- #
         post_final = _post_trade_weights(positions, cash, orders, last_px)
@@ -569,10 +586,13 @@ def execute_run(run_id: int, provider: str | None = None, prices: dict | None = 
         raise RuntimeError(f"Execution refused: {db.today()} is not an NYSE trading day.")
     prop = db.get_proposal(run_id)
     runs = db.get_runs().set_index("id")
-    if prop is None or runs.loc[run_id, "status"] != "proposed":
-        raise RuntimeError(f"Run {run_id} has no pending proposal (status: {runs.loc[run_id, 'status']}).")
+    if prop is None or not db.claim_run(run_id):     # atomic: a rerun / double click can't execute twice
+        status = db.get_runs().set_index("id").loc[run_id, "status"]
+        raise RuntimeError(f"Run {run_id} has no pending proposal (status: {status}).")
     proposed_at = runs.loc[run_id, "finished_at"] or runs.loc[run_id, "started_at"]
     live_block: dict[str, str] = {}
+    src_of: dict[str, str] = {}
+    supplied = prices is not None
     if prices is None:
         age_h = (db.now() - _dt.datetime.fromisoformat(proposed_at)).total_seconds() / 3600
         if age_h > STALE_PROPOSAL_HOURS:
@@ -588,6 +608,9 @@ def execute_run(run_id: int, provider: str | None = None, prices: dict | None = 
                 live_block[t] = px_src.blocked(info)
             elif info["px"]:
                 prices[t] = info["px"]
+                src_of[t] = info.get("source") or "?"
+    exec_dt = db.now()
+    session_open = nyse_calendar.is_open(exec_dt)
     init_mode = prop["mode"] == "init"
     room = len(prop["orders"]) if init_mode else max(0, config.MAX_TRADES_PER_DAY - db.trades_today())
     done, facts = [], []
@@ -597,13 +620,22 @@ def execute_run(run_id: int, provider: str | None = None, prices: dict | None = 
                            {"execute": False, "execution_notes": f"{o['ticker']} not executed: {live_block[o['ticker']]} (C8.5)"})
             continue
         px = float(prices.get(o["ticker"], o["price"]))
+        if supplied:
+            src = "supplied (replay/test)"
+        elif o["ticker"] not in prices:
+            src = "proposal price (no live quote)"
+        else:
+            src = src_of.get(o["ticker"], "?")
+        if not supplied and not session_open:
+            src = f"last close (off-hours) · {src}"
         try:
             meta = {"thesis": o.get("thesis", ""), "invalidation": o.get("invalidation", ""),
                     "invalidation_px": o.get("invalidation_px"), "entry_date": db.today(),
                     "regime": prop.get("regime"), "sector": o.get("sector"), "signals": o.get("signals", {}),
                     "horizon_days": 5}
             tr = db.execute_trade(run_id, o["ticker"], o["side"], o["shares"], px, o["reason"], meta,
-                                  name=o.get("name"), signals=o.get("signals_text"), proposed_at=proposed_at)
+                                  name=o.get("name"), signals=o.get("signals_text"), proposed_at=proposed_at,
+                                  price_source=src, price_time=exec_dt.strftime("%Y-%m-%d %H:%M:%S"))
             done.append(tr)
             facts.append({**(o.get("facts") or {"ticker": o["ticker"], "side": o["side"], "weight_before": 0.0,
                                                  "weight_after": 0.0}), "price": round(px, 2), "trade_id": tr["id"]})
@@ -810,6 +842,15 @@ def _lev_reviews(positions, close, last_px, asset_types) -> list[dict]:
                         "entry_px": round(entry, 2), "invalidation_px": None, "last_px": round(px, 2),
                         "since_entry": round(ret, 4), "type": "leveraged_review"})
     return out
+
+
+def order_key(orders: list[dict]) -> frozenset:
+    return frozenset((o["ticker"], o["side"], int(o["shares"])) for o in orders)
+
+
+def needs_risk_recheck(risk_checked: frozenset, final_orders: list[dict]) -> bool:
+    """True when the orders going to the Trader differ from the ones Risk approved."""
+    return order_key(final_orders) != risk_checked
 
 
 def _post_trade_weights(positions, cash, orders, px) -> dict[str, float]:

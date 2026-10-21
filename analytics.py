@@ -426,7 +426,7 @@ def risk_report(weights: dict[str, float], prices: pd.DataFrame, sectors: dict[s
     vol = float(port.std() * np.sqrt(TRADING_DAYS))
     var95 = float(-np.percentile(port, 5))
     cvar95 = float(-port[port <= np.percentile(port, 5)].mean())
-    beta = float(np.cov(port, bench)[0, 1] / bench.var())
+    beta = float(np.cov(port, bench)[0, 1] / bench.var(ddof=1))   # same ddof both sides (was ddof 1 / 0: +0.4% bias)
     cum = np.cumprod(1 + port)
     mdd = float((cum / np.maximum.accumulate(cum) - 1).min())
     sector_w: dict[str, float] = {}
@@ -452,6 +452,9 @@ def risk_report(weights: dict[str, float], prices: pd.DataFrame, sectors: dict[s
         "n_positions": len(tickers), "effective_n_positions": round(1 / hhi, 1),
         "max_pairwise_corr": round(max_pair, 2), "top3_holdings": top3, "top3_max_pair_corr": round(top3_corr, 2),
         "cash_weight": round(1 - float(w.sum()), 4),
+        "notional_exposure": round(sum(float(x) * config.LEVERAGE_FACTOR.get(t, 1.0) for t, x in zip(tickers, w)), 4),
+        "etf_notional": {t: round(float(x) * config.LEVERAGE_FACTOR.get(t, 1.0), 4) for t, x in zip(tickers, w)
+                         if t in config.LEVERAGE_FACTOR},
         "leveraged_etf_weight": round(sum(lev_w.values()), 4), "leveraged_by_etf": {k: round(v, 4) for k, v in lev_w.items()},
         "inverse_etf_weight": round(sum(inv_w.values()), 4), "inverse_by_etf": {k: round(v, 4) for k, v in inv_w.items()},
         "sector_weights": {k: round(v, 4) for k, v in sorted(sector_w.items(), key=lambda kv: -kv[1])},

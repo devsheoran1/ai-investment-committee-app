@@ -344,6 +344,39 @@ def summarize(m: dict) -> tuple[str, list[str], str]:
     return "info", [], ", ".join(f"{k}: {v}" for k, v in c.items() if not isinstance(v, (list, dict)))[:300]
 
 
+STATUS_AGENTS = ["Morning Brief", "Macro Strategist", "Equity Research Analyst", "Quant Analyst", "Sentiment Analyst",
+                 "Portfolio Manager", "Devil's Advocate", "Risk Manager", "CIO", "Trader"]
+
+
+def stage_status(msgs: list[dict], agent: str) -> str:
+    """ok / fallback / failed / — for one agent in one run (worst message wins)."""
+    mine = [m for m in msgs if m["agent"] == agent]
+    if not mine:
+        return "—"
+    bad = [str(m["model"]).startswith("FAILED") for m in mine]
+    if all(bad):
+        return "failed"                       # LLM down, neutral defaults only (D11)
+    if any(m["content"].get("agent_failed") or str(m["model"]).startswith("FAILED") or "fallback" in (m["title"] or "").lower()
+           or str(m["model"]).endswith(": template") for m in mine):
+        return "fallback"
+    return "ok"
+
+
+def run_status_row(msgs: list[dict], status: str) -> str:
+    color = {"ok": ui.GREEN, "fallback": ui.AMBER, "failed": ui.RED}
+    cells = []
+    for a in STATUS_AGENTS:
+        v = stage_status(msgs, a)
+        c = color.get(v, ui.MUTED)
+        cells.append(f'<span class="chip" style="background:{c}22;color:{c}">{ui.esc(a.split()[0])}: {v}</span>')
+    cio = next((m["content"].get("decision") for m in reversed(msgs) if m["agent"] == "CIO"), None)
+    risk = next((m["content"].get("decision") for m in reversed(msgs) if m["agent"] == "Risk Manager"), None)
+    ex = "yes" if status == "executed" else "no"
+    summary = (f"<b>Decision</b> {ui.esc(cio or '—')} · <b>Risk verdict</b> {ui.esc(risk or '—')} · "
+               f"<b>Executed</b> {ex} <span style='color:{ui.MUTED}'>({ui.esc(status)})</span>")
+    return f"<div class='card'><div style='margin-bottom:6px'>{summary}</div><div>{' '.join(cells)}</div></div>"
+
+
 with tab_room:
     if REPLAY:
         st.info("Replay fund (read-only). Generate it with `python orchestrator.py --replay 20`.")
@@ -388,14 +421,19 @@ with tab_room:
                         unsafe_allow_html=True)
         msgs = rules_cards(messages_of(run_id))
         prop = db.get_proposal(run_id)
+        run_status = r.loc[run_id, "status"]
+        book_state = "EXECUTED" if run_status == "executed" else "PROPOSED"
+        st.markdown(run_status_row(msgs, run_status), unsafe_allow_html=True)
         has_da_answer = any(x["agent"] == "Portfolio Manager" and x["stage"] == "proposal_answers_da" for x in msgs)
-        for m in msgs:
+        show_diag = st.toggle("Show diagnostics (agent-by-agent minutes, prompts, raw output)", value=False)
+        for m in (msgs if show_diag else []):
             stance, nums, msg = summarize(m)
             if m["content"].get("agent_failed"):
                 stance, msg = "info", f"⚠ Agent failed → {m['content'].get('fallback', 'rules fallback')}. " + (msg or "")
             ui.agent_card(m["agent"], m["title"], m["model"], m.get("latency_s"), stance, nums, msg)
             c = m["content"]
             if m["agent"] == "Risk Manager" and c.get("limit_checks"):
+                st.caption(f"**{book_state}** post-trade book (run status: {run_status}). The CURRENT book is in the Portfolio tab.")
                 ui.limit_grid(c["limit_checks"])
             if m["agent"] == "Devil's Advocate" and c.get("objections"):
                 ans = next((x["content"].get("da_responses") or {} for x in msgs
@@ -458,6 +496,8 @@ with tab_pf:
         ui.empty("Nothing to analyse yet", "Exposure, risk and liquidity views appear after initialisation.")
     else:
         w = pd.Series(weights)
+        st.caption("**CURRENT book** · executed positions only. These numbers change only when trades execute; "
+                   "a pending proposal's post-trade risk is in the Decision Room, labelled PROPOSED.")
         a1, a2 = st.columns(2)
         caps = pos_df.groupby("Cap")["Weight"].sum().reindex(["Mega", "Large", "Mid", "Small", "ETF", "–"]).dropna()
         a1.plotly_chart(go.Figure(go.Bar(x=caps.index, y=caps.values, text=[f"{v:.0f}%" for v in caps.values],
@@ -489,11 +529,16 @@ with tab_pf:
         rc_df = pd.DataFrame({"t": held, "weight": wv * 100, "risk": rc * 100, "beta_c": betas * wv})
         b2.plotly_chart(go.Figure([go.Bar(name="weight %", x=rc_df["t"], y=rc_df["weight"], marker_color=ui.BLUE3),
                                    go.Bar(name="risk contribution %", x=rc_df["t"], y=rc_df["risk"], marker_color=ui.ACCENT)]
-                                  ).update_layout(title=f"Risk contribution vs weight (book vol {np.sqrt(port_var):.1%})",
+                                  ).update_layout(title=f"Current · risk contribution vs weight (vol {np.sqrt(port_var):.1%})",
                                                   height=360, barmode="group"), width="stretch")
         c1_, c2_ = st.columns(2)
         c1_.plotly_chart(go.Figure(go.Bar(x=rc_df["t"], y=rc_df["beta_c"], marker_color=ui.BLUE2)).update_layout(
-            title=f"Beta contribution (book beta {rc_df['beta_c'].sum():.2f})", height=340), width="stretch")
+            title=f"Current · beta contribution (book beta {rc_df['beta_c'].sum():.2f}, 1y daily vs SPY)", height=340), width="stretch")
+        etf_n = {t: weights[t] * config.LEVERAGE_FACTOR[t] for t in held if t in config.LEVERAGE_FACTOR}
+        net_n = sum(weights[t] * config.LEVERAGE_FACTOR.get(t, 1.0) for t in held)
+        c1_.caption("Current notional exposure: " + (", ".join(f"{t} {weights[t]:.1%} × {config.LEVERAGE_FACTOR[t]:g} = {v:.1%}"
+                                                           for t, v in etf_n.items()) or "no leveraged ETFs")
+                    + f" · net notional {net_n:.0%} of NAV")
         corr = rets[held].corr()
         c2_.plotly_chart(go.Figure(go.Heatmap(z=corr.values, x=corr.columns, y=corr.index, zmin=-1, zmax=1,
                                               colorscale=[[0, ui.RED], [0.5, ui.PANEL2], [1, ui.ACCENT]])).update_layout(
@@ -526,30 +571,44 @@ with tab_pf:
 # Performance
 # --------------------------------------------------------------------------- #
 with tab_perf:
-    if len(snaps) < 2:
+    sess = snaps.drop_duplicates("date", keep="last") if len(snaps) else snaps   # one point per NYSE session
+    if len(sess) < 2:
         ui.empty("Performance builds up day by day", "NAV vs SPY, drawdown, attribution and the committee's hit rate appear "
                  "after the second daily snapshot (after-close snapshot at 21:45 Madrid).")
     else:
-        s = snaps.copy()
+        s = sess.copy()
         s["date"] = pd.to_datetime(s["date"])
+        PCT = dict(ticksuffix="%", tickformat=".2f")          # no nano-scale axes on flat early days
+        SESS = dict(type="category", title=None)              # one tick per session, no weekend gaps
+        s["d"] = s["date"].dt.strftime("%b %d")
         p1, p2 = st.columns(2)
-        p1.plotly_chart(go.Figure([go.Scatter(x=s["date"], y=s["total_equity"] / config.STARTING_CAPITAL * 100, name="Fund",
-                                              line=dict(width=3)),
-                                   go.Scatter(x=s["date"], y=s["benchmark_px"] / s["benchmark_px"].iloc[0] * 100, name="SPY",
-                                              line=dict(dash="dot", color=ui.BLUE3))]).update_layout(
-            title="NAV vs SPY (rebased to 100)", height=320), width="stretch")
+        p1.plotly_chart(go.Figure([go.Scatter(x=s["d"], y=(s["total_equity"] / config.STARTING_CAPITAL - 1) * 100, name="Fund",
+                                              mode="lines+markers", line=dict(width=3)),
+                                   go.Scatter(x=s["d"], y=(s["benchmark_px"] / s["benchmark_px"].iloc[0] - 1) * 100, name="SPY",
+                                              mode="lines+markers", line=dict(dash="dot", color=ui.BLUE3))]).update_layout(
+            title="Cumulative return vs SPY (%)", height=320, yaxis=PCT, xaxis=SESS), width="stretch")
         dd = s["total_equity"] / s["total_equity"].cummax().clip(lower=config.STARTING_CAPITAL) - 1
-        fig = go.Figure(go.Scatter(x=s["date"], y=dd * 100, fill="tozeroy", line=dict(color=ui.RED)))
+        fig = go.Figure(go.Scatter(x=s["d"], y=dd * 100, fill="tozeroy", mode="lines+markers", line=dict(color=ui.RED)))
         for lvl in (config.DD_WARN, config.DD_HARD):
             fig.add_hline(y=lvl * 100, line_dash="dot", line_color=ui.AMBER, annotation_text=f"C11 {lvl:.0%}")
-        p2.plotly_chart(fig.update_layout(title="Drawdown (underwater)", height=320, yaxis_ticksuffix="%",
-                                          yaxis_range=[min(-11, dd.min() * 100 - 1), 1]), width="stretch")
-        dr = s.set_index("date")["total_equity"].pct_change().dropna()
+        p2.plotly_chart(fig.update_layout(title="Drawdown (underwater, %)", height=320, xaxis=SESS,
+                                          yaxis={**PCT, "range": [min(-11, dd.min() * 100 - 1), 1]}), width="stretch")
+        dr = s.set_index("d")["total_equity"].pct_change().dropna()
         q1, q2 = st.columns(2)
-        q1.plotly_chart(go.Figure(go.Bar(x=dr.index, y=dr.values * 100, marker_color=[ui.GREEN if v >= 0 else ui.RED for v in dr])
-                                  ).update_layout(title="Daily return (%)", height=280), width="stretch")
-        q2.plotly_chart(go.Figure(go.Scatter(x=dr.index, y=dr.rolling(5).std() * np.sqrt(252) * 100, line=dict(color=ui.BLUE2))
-                                  ).update_layout(title="Rolling 5-day vol (annualised %)", height=280), width="stretch")
+        if len(dr) < 2:
+            with q1:
+                ui.empty("Daily return (%)", "Needs at least 2 daily returns (3 sessions).")
+        else:
+            q1.plotly_chart(go.Figure(go.Bar(x=dr.index, y=dr.values * 100, marker_color=[ui.GREEN if v >= 0 else ui.RED for v in dr])
+                                      ).update_layout(title="Daily return (%)", height=280, yaxis=PCT, xaxis=SESS), width="stretch")
+        rv = dr.rolling(5).std().dropna() * np.sqrt(252) * 100
+        if len(rv) < 2:
+            with q2:
+                ui.empty("Rolling 5-day vol (annualised %)", "Needs 6+ sessions.")
+        else:
+            q2.plotly_chart(go.Figure(go.Scatter(x=rv.index, y=rv.values, mode="lines+markers", line=dict(color=ui.BLUE2))
+                                      ).update_layout(title="Rolling 5-day vol (annualised %)", height=280, yaxis=PCT, xaxis=SESS),
+                            width="stretch")
         att = report.attribution_result()
         r1, r2 = st.columns(2)
         if att:
@@ -599,7 +658,14 @@ with tab_tr:
         t_["name"] = t_["symbol"].map(data.label)
         if q:
             t_ = t_[t_["name"].str.contains(q, case=False)]
-        st.dataframe(t_[["date", "hour", "action", "name", "shares", "price", "total", "reason"]].rename(columns={"hour": "time (Madrid)"}),
+        for col in ("proposed_at", "price_source", "price_time"):
+            if col not in t_:
+                t_[col] = None
+        t_["decided"] = t_["proposed_at"].map(lambda x: db.madrid_et(x)[:16] if isinstance(x, str) and x else "—")
+        t_["price_source"] = t_["price_source"].fillna("— (before Oct 21)")
+        st.dataframe(t_[["date", "hour", "decided", "action", "name", "shares", "price", "price_source", "price_time", "total", "reason"]]
+                     .rename(columns={"hour": "executed (Madrid)", "decided": "decided (Madrid)", "price_source": "price source",
+                                      "price_time": "price time (Madrid)"}),
                      hide_index=True, width="stretch", column_config={"total": st.column_config.NumberColumn(format="$%,.0f"),
                                                                       "price": st.column_config.NumberColumn(format="$%.2f")})
         with st.expander("Signals behind each trade"):
@@ -628,7 +694,7 @@ with tab_com:
         color, owner, ini = ui.AGENT_STYLE.get(a.name, (ui.BLUE2, "team", a.name[:2]))
         mine = [m for m in all_msgs if m["agent"] == a.name]
         valid = sum(1 for m in mine if not str(m["model"]).startswith("FAILED"))
-        rel = f"{valid / len(mine):.0%} valid ({len(mine)} msgs)" if mine else "no runs yet"
+        rel = f"{valid} of {len(mine)} valid" if mine else "no runs yet"
         model = "rules (no LLM)" if a.tier == "rules" else config.PROVIDERS.get(config.LLM_PROVIDER, {}).get(a.tier, a.tier)
         brief = (a.role_prompt.strip().split(". ")[0] + ".")[:220]
         cols[i % 3].markdown(f'''<div class="card"><div class="head"><div class="avatar" style="background:{color}">{ui.esc(ini)}</div>

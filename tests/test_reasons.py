@@ -34,7 +34,8 @@ def test_trades_csv_columns_and_names():
         db.execute_trade(1, "PSX", "BUY", 10, 290.0, "Bought Phillips 66 ...", name="Phillips 66",
                          signals="composite 7.1/10 · Q +0.60 · S n/a", proposed_at=db._now())
         rows = list(csv.reader(open(db.export_trades_csv())))
-        assert rows[0] == ["date", "hour_madrid", "ticker", "name", "side", "price", "shares", "total", "reason", "signals"]
+        assert rows[0] == ["date", "hour_madrid", "ticker", "name", "side", "price", "shares", "total", "reason", "signals",
+                       "decided_at", "price_source", "price_time"]
         assert rows[1][3] == "Phillips 66" and "composite" in rows[1][9] and "composite" not in rows[1][8]
     finally:
         config.DB_PATH, config.TRADES_CSV = old; db._DB["path"] = config.DB_PATH
