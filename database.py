@@ -256,6 +256,8 @@ def execute_trade(run_id: int, symbol: str, side: str, shares: int, price: float
         cash = float(c.execute("SELECT cash_balance FROM simulation WHERE id=1").fetchone()[0])
         if side == "SELL":
             shares = min(shares, old_sh)
+        if shares <= 0:                          # a 0-share fill is not a trade: never log it or count it in the cap
+            raise ValueError(f"{side} {symbol}: 0 shares to trade (held {old_sh})")
         total = shares * price
         cost = total * config.TRANSACTION_COST_BPS / 1e4
         if side == "BUY":

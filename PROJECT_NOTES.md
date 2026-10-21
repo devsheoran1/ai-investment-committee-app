@@ -450,3 +450,9 @@ Real lessons read like: "Oil breakout signal drove XOM above SPY in neutral regi
 - Committee reliability shows "x of n valid".
 - **CONTRACT CHANGE (flag to team):** `trades.csv` gains 3 columns: `decided_at, price_source, price_time`. `transactions` table gains `price_source, price_time` (auto-migrated). risk_report JSON gains `notional_exposure`, `etf_notional`.
 - Tests: `tests/test_handoff.py` (7 tests, all pass); existing suites pass.
+
+## Oct 21 (2): follow-up robustness tests (mock/tests only)
+- API failures: llm.py retry loop verified, not rebuilt. 429/503/timeout → bounded exponential backoff (≤60 s per wait, LLM_MAX_RETRIES=6), then LLMError → agent logged `FAILED (...)` + rules fallback (CIO: extra `rules` message "rules fallback"). Never logged under an LLM model name.
+- Fix: a SELL clamped to 0 shares no longer logs a 0-share "trade" (it used to count toward the 5/day cap).
+- Tests: `tests/test_followup.py` (11): retries/backoff, PM+CIO down, reconciliation (NAV, cash ≥ 0, DB = trades.csv = fills), init exemption, 5/day cap, rejects not counted, 3 runs/day (errored runs don't count; replay exempt by design), restart mid-execution / mid-run, duplicate same-day snapshots, <2 sessions placeholder.
+- Open risk: a process killed mid-execution leaves the run in `executing` with a partial book (fail-closed, no double execution). Recovery is manual: inspect, then re-run the committee.
