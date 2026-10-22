@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np, pandas as pd
 import config, data, database as db
 import orchestrator
-from committee import QuantAnalyst, SentimentAnalyst, Trader
+from committee import QuantAnalyst, SentimentAnalyst, EquityResearchAnalyst, Trader
 
 
 def _tmp_fund():
@@ -36,6 +36,26 @@ def _last_day():
 
 
 def test_d11_d12_failed_agents_mean_no_signal_and_no_new_trades():
+    """Research + Sentiment down: no usable score from either -> 2 silent -> no new trades."""
+    saved = (config.DB_PATH, config.TRADES_CSV)
+    r_run, s_run = EquityResearchAnalyst.run, SentimentAnalyst.run
+    try:
+        _tmp_fund()
+        def boom(self, ctx, llm):
+            raise RuntimeError("simulated timeout")
+        EquityResearchAnalyst.run = SentimentAnalyst.run = boom
+        res = orchestrator.run_committee("mock", asof=_last_day())
+        assert {"Equity Research Analyst", "Sentiment Analyst"} <= set(res["failed_agents"])   # D11: logged, no crash
+        runs = db.get_runs()
+        assert "Insufficient information (IPS D12)" in runs.iloc[0]["summary"], runs.iloc[0]["summary"]
+        assert res["orders"] == []                                                     # init + D12: nothing new
+    finally:
+        EquityResearchAnalyst.run, SentimentAnalyst.run = r_run, s_run
+        config.DB_PATH, config.TRADES_CSV = saved; db._DB["path"] = config.DB_PATH
+
+
+def test_d12_quant_rule_fallback_is_not_silent():
+    """Quant + Sentiment down: Quant still gives labelled rule scores -> only 1 silent -> the run trades."""
     saved = (config.DB_PATH, config.TRADES_CSV)
     q_run, s_run = QuantAnalyst.run, SentimentAnalyst.run
     try:
@@ -44,10 +64,11 @@ def test_d11_d12_failed_agents_mean_no_signal_and_no_new_trades():
             raise RuntimeError("simulated timeout")
         QuantAnalyst.run = SentimentAnalyst.run = boom
         res = orchestrator.run_committee("mock", asof=_last_day())
-        assert {"Quant Analyst", "Sentiment Analyst"} <= set(res["failed_agents"])      # D11: logged, no crash
-        runs = db.get_runs()
-        assert "Insufficient information (IPS D12)" in runs.iloc[0]["summary"], runs.iloc[0]["summary"]
-        assert res["orders"] == []                                                     # init + D12: nothing new
+        assert {"Quant Analyst", "Sentiment Analyst"} <= set(res["failed_agents"])
+        summary = db.get_runs().iloc[0]["summary"]
+        assert "Insufficient information" not in summary, summary
+        q = next(m["content"] for m in db.get_messages(res["run_id"]) if m["agent"] == "Quant Analyst")
+        assert all(v["fallback"] for v in q["signals"].values()) and res["orders"]
     finally:
         QuantAnalyst.run, SentimentAnalyst.run = q_run, s_run
         config.DB_PATH, config.TRADES_CSV = saved; db._DB["path"] = config.DB_PATH

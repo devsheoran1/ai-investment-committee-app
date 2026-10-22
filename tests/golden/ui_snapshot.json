@@ -1,0 +1,1367 @@
+{
+ "diag_main": [
+  {
+   "d": 0,
+   "t": "Markdown"
+  },
+  {
+   "d": 0,
+   "t": "Markdown"
+  },
+  {
+   "d": 0,
+   "t": "Block"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 0,
+   "t": "Block"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 0,
+   "t": "Markdown"
+  },
+  {
+   "d": 0,
+   "t": "Markdown"
+  },
+  {
+   "d": 0,
+   "t": "Block"
+  },
+  {
+   "d": 1,
+   "t": "Tab",
+   "label": "Decision Room"
+  },
+  {
+   "d": 2,
+   "t": "Block"
+  },
+  {
+   "d": 3,
+   "t": "Column"
+  },
+  {
+   "d": 4,
+   "t": "Button",
+   "label": "\u25b6\ufe0f Run committee"
+  },
+  {
+   "d": 4,
+   "t": "Caption"
+  },
+  {
+   "d": 3,
+   "t": "Column"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Selectbox",
+   "label": "Meeting",
+   "options": [
+    "#1 \u00b7 2026-10-23 00:46 Madrid (18:46 ET) \u00b7 init \u00b7 proposed \u00b7 mock"
+   ]
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Toggle",
+   "label": "Show diagnostics (agent-by-agent minutes, prompts, raw output)"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "What Morning Brief saw \u00b7 raw output"
+  },
+  {
+   "d": 3,
+   "t": "Json"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "What Screener saw \u00b7 raw output"
+  },
+  {
+   "d": 3,
+   "t": "Json"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "What Regime Engine saw \u00b7 raw output"
+  },
+  {
+   "d": 3,
+   "t": "Json"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "Model card \u00b7 horse race scoreboard + LSTM"
+  },
+  {
+   "d": 3,
+   "t": "Caption"
+  },
+  {
+   "d": 3,
+   "t": "Json"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "What Model Lab saw \u00b7 raw output"
+  },
+  {
+   "d": 3,
+   "t": "Json"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "What Macro Strategist saw \u00b7 raw output"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Caption"
+  },
+  {
+   "d": 3,
+   "t": "Json"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "What Equity Research Analyst saw \u00b7 raw output"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Caption"
+  },
+  {
+   "d": 3,
+   "t": "Json"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "What Quant Analyst saw \u00b7 raw output"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Caption"
+  },
+  {
+   "d": 3,
+   "t": "Json"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "What Sentiment Analyst saw \u00b7 raw output"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Caption"
+  },
+  {
+   "d": 3,
+   "t": "Json"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "What Portfolio Manager saw \u00b7 raw output"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Caption"
+  },
+  {
+   "d": 3,
+   "t": "Json"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Block"
+  },
+  {
+   "d": 3,
+   "t": "Column"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Column"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "What Devil's Advocate saw \u00b7 raw output"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Caption"
+  },
+  {
+   "d": 3,
+   "t": "Json"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Caption"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "What Portfolio Manager saw \u00b7 raw output"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Caption"
+  },
+  {
+   "d": 3,
+   "t": "Json"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Caption"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "What Risk Manager saw \u00b7 raw output"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Caption"
+  },
+  {
+   "d": 3,
+   "t": "Json"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "What CIO saw \u00b7 raw output"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Code"
+  },
+  {
+   "d": 3,
+   "t": "Caption"
+  },
+  {
+   "d": 3,
+   "t": "Json"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "What Trader saw \u00b7 raw output"
+  },
+  {
+   "d": 3,
+   "t": "Json"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Dataframe",
+   "columns": [
+    "name",
+    "side",
+    "shares",
+    "price",
+    "notional",
+    "target_weight",
+    "reason"
+   ]
+  },
+  {
+   "d": 2,
+   "t": "Caption"
+  },
+  {
+   "d": 2,
+   "t": "Checkbox",
+   "label": "I have read the reasoning and the Risk Manager's checks"
+  },
+  {
+   "d": 2,
+   "t": "Button",
+   "label": "\u2705 Execute trades"
+  },
+  {
+   "d": 1,
+   "t": "Tab",
+   "label": "Portfolio"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 1,
+   "t": "Tab",
+   "label": "Performance"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Dataframe",
+   "columns": [
+    "n",
+    "origins",
+    "hit",
+    "ic",
+    "ic_t",
+    "trust_hit",
+    "always_up",
+    "n_trust",
+    "weight"
+   ]
+  },
+  {
+   "d": 2,
+   "t": "Caption"
+  },
+  {
+   "d": 1,
+   "t": "Tab",
+   "label": "Trades"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Code"
+  },
+  {
+   "d": 2,
+   "t": "Button",
+   "label": "Build daily report + Word summary"
+  },
+  {
+   "d": 1,
+   "t": "Tab",
+   "label": "Committee"
+  },
+  {
+   "d": 2,
+   "t": "Block"
+  },
+  {
+   "d": 3,
+   "t": "Column"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Column"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Column"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "2026-10-23 00:46 Madrid (18:46 ET) \u00b7 mock"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Caption"
+  },
+  {
+   "d": 0,
+   "t": "Markdown"
+  },
+  {
+   "d": 0,
+   "t": "Expander",
+   "label": "Data quality"
+  },
+  {
+   "d": 1,
+   "t": "Info"
+  }
+ ],
+ "diag_expanders": [
+  "What Morning Brief saw \u00b7 raw output",
+  "What Screener saw \u00b7 raw output",
+  "What Regime Engine saw \u00b7 raw output",
+  "Model card \u00b7 horse race scoreboard + LSTM",
+  "What Model Lab saw \u00b7 raw output",
+  "What Macro Strategist saw \u00b7 raw output",
+  "What Equity Research Analyst saw \u00b7 raw output",
+  "What Quant Analyst saw \u00b7 raw output",
+  "What Sentiment Analyst saw \u00b7 raw output",
+  "What Portfolio Manager saw \u00b7 raw output",
+  "What Devil's Advocate saw \u00b7 raw output",
+  "What Portfolio Manager saw \u00b7 raw output",
+  "What Risk Manager saw \u00b7 raw output",
+  "What CIO saw \u00b7 raw output",
+  "What Trader saw \u00b7 raw output",
+  "2026-10-23 00:46 Madrid (18:46 ET) \u00b7 mock",
+  "Data quality",
+  "Start new simulation"
+ ],
+ "diag_exceptions": [],
+ "exceptions": [],
+ "tabs": [
+  "Decision Room",
+  "Portfolio",
+  "Performance",
+  "Trades",
+  "Committee"
+ ],
+ "buttons": [
+  "\u25b6\ufe0f Run committee",
+  "\u2705 Execute trades",
+  "Build daily report + Word summary",
+  "\ud83d\udcc5 Intraday mark (not the close)"
+ ],
+ "expanders": [
+  "What Morning Brief saw \u00b7 raw output",
+  "What Screener saw \u00b7 raw output",
+  "What Regime Engine saw \u00b7 raw output",
+  "Model card \u00b7 horse race scoreboard + LSTM",
+  "What Model Lab saw \u00b7 raw output",
+  "What Macro Strategist saw \u00b7 raw output",
+  "What Equity Research Analyst saw \u00b7 raw output",
+  "What Quant Analyst saw \u00b7 raw output",
+  "What Sentiment Analyst saw \u00b7 raw output",
+  "What Portfolio Manager saw \u00b7 raw output",
+  "What Devil's Advocate saw \u00b7 raw output",
+  "What Portfolio Manager saw \u00b7 raw output",
+  "What Risk Manager saw \u00b7 raw output",
+  "What CIO saw \u00b7 raw output",
+  "What Trader saw \u00b7 raw output",
+  "2026-10-23 00:46 Madrid (18:46 ET) \u00b7 mock",
+  "Data quality",
+  "Start new simulation"
+ ],
+ "toggles": [
+  "Show diagnostics (agent-by-agent minutes, prompts, raw output)"
+ ],
+ "selectboxes": [
+  [
+   "Meeting",
+   [
+    "#1 \u00b7 2026-10-23 00:46 Madrid (18:46 ET) \u00b7 init \u00b7 proposed \u00b7 mock"
+   ]
+  ],
+  [
+   "AI brain",
+   [
+    "groq",
+    "ollama",
+    "anthropic",
+    "mock"
+   ]
+  ]
+ ],
+ "metrics": [
+  "Runs today",
+  "Trades today"
+ ],
+ "headers": [],
+ "main": [
+  {
+   "d": 0,
+   "t": "Markdown"
+  },
+  {
+   "d": 0,
+   "t": "Markdown"
+  },
+  {
+   "d": 0,
+   "t": "Block"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 0,
+   "t": "Block"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 0,
+   "t": "Markdown"
+  },
+  {
+   "d": 0,
+   "t": "Markdown"
+  },
+  {
+   "d": 0,
+   "t": "Block"
+  },
+  {
+   "d": 1,
+   "t": "Tab",
+   "label": "Decision Room"
+  },
+  {
+   "d": 2,
+   "t": "Block"
+  },
+  {
+   "d": 3,
+   "t": "Column"
+  },
+  {
+   "d": 4,
+   "t": "Button",
+   "label": "\u25b6\ufe0f Run committee"
+  },
+  {
+   "d": 4,
+   "t": "Caption"
+  },
+  {
+   "d": 3,
+   "t": "Column"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Selectbox",
+   "label": "Meeting",
+   "options": [
+    "#1 \u00b7 2026-10-23 00:46 Madrid (18:46 ET) \u00b7 init \u00b7 proposed \u00b7 mock"
+   ]
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Toggle",
+   "label": "Show diagnostics (agent-by-agent minutes, prompts, raw output)"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Dataframe",
+   "columns": [
+    "name",
+    "side",
+    "shares",
+    "price",
+    "notional",
+    "target_weight",
+    "reason"
+   ]
+  },
+  {
+   "d": 2,
+   "t": "Caption"
+  },
+  {
+   "d": 2,
+   "t": "Checkbox",
+   "label": "I have read the reasoning and the Risk Manager's checks"
+  },
+  {
+   "d": 2,
+   "t": "Button",
+   "label": "\u2705 Execute trades"
+  },
+  {
+   "d": 1,
+   "t": "Tab",
+   "label": "Portfolio"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 1,
+   "t": "Tab",
+   "label": "Performance"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Dataframe",
+   "columns": [
+    "n",
+    "origins",
+    "hit",
+    "ic",
+    "ic_t",
+    "trust_hit",
+    "always_up",
+    "n_trust",
+    "weight"
+   ]
+  },
+  {
+   "d": 2,
+   "t": "Caption"
+  },
+  {
+   "d": 1,
+   "t": "Tab",
+   "label": "Trades"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Code"
+  },
+  {
+   "d": 2,
+   "t": "Button",
+   "label": "Build daily report + Word summary"
+  },
+  {
+   "d": 1,
+   "t": "Tab",
+   "label": "Committee"
+  },
+  {
+   "d": 2,
+   "t": "Block"
+  },
+  {
+   "d": 3,
+   "t": "Column"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Column"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 3,
+   "t": "Column"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 4,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "2026-10-23 00:46 Madrid (18:46 ET) \u00b7 mock"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Caption"
+  },
+  {
+   "d": 0,
+   "t": "Markdown"
+  },
+  {
+   "d": 0,
+   "t": "Expander",
+   "label": "Data quality"
+  },
+  {
+   "d": 1,
+   "t": "Info"
+  }
+ ],
+ "sidebar": [
+  {
+   "d": 0,
+   "t": "Markdown"
+  },
+  {
+   "d": 0,
+   "t": "Radio",
+   "label": "Fund",
+   "options": [
+    "Live",
+    "Replay (20 days)"
+   ]
+  },
+  {
+   "d": 0,
+   "t": "Caption"
+  },
+  {
+   "d": 0,
+   "t": "Markdown"
+  },
+  {
+   "d": 0,
+   "t": "Caption"
+  },
+  {
+   "d": 0,
+   "t": "Selectbox",
+   "label": "AI brain",
+   "options": [
+    "groq",
+    "ollama",
+    "anthropic",
+    "mock"
+   ]
+  },
+  {
+   "d": 0,
+   "t": "Block"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Metric",
+   "label": "Runs today"
+  },
+  {
+   "d": 1,
+   "t": "Column"
+  },
+  {
+   "d": 2,
+   "t": "Metric",
+   "label": "Trades today"
+  },
+  {
+   "d": 0,
+   "t": "Button",
+   "label": "\ud83d\udcc5 Intraday mark (not the close)"
+  },
+  {
+   "d": 0,
+   "t": "Expander",
+   "label": "Start new simulation"
+  },
+  {
+   "d": 1,
+   "t": "Caption"
+  },
+  {
+   "d": 1,
+   "t": "Checkbox",
+   "label": "I understand this wipes all trades and minutes"
+  },
+  {
+   "d": 0,
+   "t": "Caption"
+  }
+ ],
+ "contract": {
+  "roster": [
+   "CIO",
+   "Macro Strategist",
+   "Equity Research Analyst",
+   "Quant Analyst",
+   "Sentiment Analyst",
+   "Portfolio Manager",
+   "Devil's Advocate",
+   "Risk Manager",
+   "Trader"
+  ],
+  "brief_roles": {
+   "Data Agent": [
+    "Macro Strategist",
+    "Equity Research Analyst",
+    "Quant Analyst",
+    "Sentiment Analyst"
+   ],
+   "Strategy Agent": [
+    "Portfolio Manager"
+   ],
+   "Risk Agent": [
+    "Risk Manager",
+    "CIO"
+   ],
+   "Execution Agent": [
+    "Trader"
+   ]
+  },
+  "risk_limits": {
+   "max_single_weight": 0.2,
+   "max_sector_weight": 0.35,
+   "min_cash_weight": 0.0,
+   "max_cash_weight": 0.05,
+   "max_portfolio_vol": 0.35,
+   "max_var_95_1d": 0.05,
+   "max_beta": null,
+   "max_leveraged_total": 0.3,
+   "max_leveraged_each": 0.15,
+   "max_inverse_total": 0.25,
+   "max_drawdown": -0.1
+  },
+  "stop_loss": -0.1,
+  "drift_tolerance": 0.05,
+  "max_trades": 5,
+  "max_runs": 3,
+  "holdings": [
+   10,
+   20
+  ],
+  "target_holdings": [
+   12,
+   15
+  ],
+  "dd": [
+   -0.07,
+   -0.1
+  ],
+  "signal_weights": {
+   "quant": 0.4,
+   "sentiment": 0.3,
+   "research": 0.15,
+   "macro": 0.15
+  },
+  "report_headings": [
+   "# Daily report \u2014 2026-10-23",
+   "## Data quality",
+   "## Trades and reasoning",
+   "## Committee minutes",
+   "## Lessons learned (reflection memory)",
+   "## Morning Brief",
+   "## Devil's Advocate vs the PM",
+   "## Risk Manager: hard-limit checks (post-trade book)",
+   "## Agent failures (D11)",
+   "## Holdings",
+   "## Forum post (17:00\u201318:00 Madrid)"
+  ],
+  "forum_headings": [],
+  "trades_csv_columns": [
+   "date",
+   "hour_madrid",
+   "ticker",
+   "name",
+   "side",
+   "price",
+   "shares",
+   "total",
+   "reason",
+   "signals",
+   "decided_at",
+   "price_source",
+   "price_time"
+  ]
+ }
+}

@@ -274,6 +274,38 @@ def drawdown_state(equity_history: list[float], nav: float) -> dict:
 # --------------------------------------------------------------------------- #
 # Optimiser (Portfolio Manager's tool)
 # --------------------------------------------------------------------------- #
+def trailing_drawdown(avg_cost: float, px: float, closes_since_entry) -> tuple[float, float]:
+    """(drawdown, peak): the peak is the highest of the entry cost, the closes since entry and the live price."""
+    peak = max(float(avg_cost), float(px))
+    if closes_since_entry is not None and len(closes_since_entry):
+        peak = max(peak, float(np.max(closes_since_entry)))
+    return float(px) / peak - 1, peak
+
+
+def vol_managed(convictions: dict[str, float], prices: pd.DataFrame, asset_types: dict[str, str]) -> dict[str, float]:
+    """Volatility-managed sizing (Moreira-Muir style) as an optimiser overlay: a stock's positive conviction is scaled
+    by median_vol / own_vol over the last 63 sessions, clipped to [0.6, 1.25], so calm names get a bit more of the
+    risk budget and wild ones less. ETFs keep their conviction (they have their own vol-targeted caps); negative
+    convictions are untouched. The IPS limits stay hard constraints inside the optimiser."""
+    cfg = config.VOL_MANAGED
+    if not cfg.get("enabled") or not convictions:
+        return convictions
+    names = [t for t in convictions if asset_types.get(t, "stock") == "stock" and t in prices.columns]
+    if len(names) < 3:
+        return convictions
+    r = np.log(prices[names]).diff().tail(cfg["lookback"])
+    vol = r.std() * np.sqrt(TRADING_DAYS)
+    vol = vol[vol > 0]
+    if len(vol) < 3:
+        return convictions
+    med = float(vol.median())
+    out = dict(convictions)
+    for t in vol.index:
+        if convictions[t] > 0:
+            out[t] = round(min(1.0, convictions[t] * float(np.clip(med / vol[t], cfg["floor"], cfg["cap"]))), 4)
+    return out
+
+
 def optimise(convictions: dict[str, float], prices: pd.DataFrame, sectors: dict[str, str],
              asset_types: dict[str, str], equity_exposure: float, regime: str, vix: float,
              max_names: int, risk_aversion: float = 4.0, diversification: float = 0.5,
@@ -468,7 +500,8 @@ def plan_orders(target_w: dict[str, float], positions: dict[str, dict], px: dict
                 composite: dict[str, dict], untradeable: dict[str, str], sectors: dict | None = None,
                 asset_types: dict | None = None, caps: dict | None = None, lev_cap: float | None = None,
                 no_new_leveraged: bool = False,
-                no_new_leveraged_reason: str = "C11 drawdown rule: no new leveraged buys") -> tuple[list[dict], list[dict]]:
+                no_new_leveraged_reason: str = "C11 drawdown rule: no new leveraged buys",
+                buy_ideas: list[str] | None = None) -> tuple[list[dict], list[dict]]:
     """Target book -> the orders that will actually execute (<= 5/day after init). Returns (orders, skipped).
 
     Order of business (IPS C5.5): forced exits; replacement buys if the book is below the 12-name target
@@ -477,7 +510,12 @@ def plan_orders(target_w: dict[str, float], positions: dict[str, dict], px: dict
         buy the same day, or it is dropped. Forced exits (stop-loss, news veto, C11) always go through.
       - cash <= 5% (A12): if the cap leaves too much cash, the BUYs already in the plan are upsized
         (20% name / 35% sector / ETF caps), then held names topped up if a slot is free; otherwise flagged.
-    Sells always precede buys."""
+    Sells always precede buys.
+
+    Drift trims (Oct 23): a partial, unforced SELL (a position that outgrew its target by more than the A16 band)
+    is paired with a BUY of the best unheld idea in `buy_ideas` (best first) sized to the proceeds, so the money
+    does not sit in cash. A pair competes for the daily slots as one unit (2 trades); if there is no room for both
+    the trim goes alone and the A12 cash logic below handles the proceeds, as before."""
     L = config.RISK_LIMITS
     sectors, asset_types, caps = sectors or {}, asset_types or {}, caps or {}
     held_names = {t for t, p in positions.items() if p.get("shares", 0) > 0}
@@ -528,21 +566,41 @@ def plan_orders(target_w: dict[str, float], positions: dict[str, dict], px: dict
                       "full_exit": side == "SELL" and shares >= held, "forced_reason": forced_exits.get(t, ""),
                       "replacement": bool(replenish and is_new), "priority": prio})
 
+    if buy_ideas and config.PAIR_TRIMS and not init_mode:
+        _pair_trims(cands, buy_ideas, positions, px, nav, held_names, forced_exits, untradeable, asset_types, sectors)
+
     cands.sort(key=lambda o: -o["priority"])
     chosen, turnover = [], 0.0
-    for o in cands:
+
+    def admit(batch):
+        """All-or-nothing: returns the refusal reason, or None after adding the batch to `chosen`."""
+        nonlocal turnover
         if not init_mode:
-            if len(chosen) >= config.MAX_TRADES_PER_DAY:
-                skipped.append({"ticker": o["ticker"], "reason": f"daily cap of {config.MAX_TRADES_PER_DAY} trades reached"})
-                continue
-            if not o["forced"] and turnover + o["notional"] / nav / 2 > config.MAX_DAILY_TURNOVER + 1e-9:
-                skipped.append({"ticker": o["ticker"], "reason": f"would exceed {config.MAX_DAILY_TURNOVER:.0%} daily turnover"})
-                continue
-        if o["is_new"] and _post_count(positions, chosen) >= config.MAX_HOLDINGS:
-            skipped.append({"ticker": o["ticker"], "reason": f"would exceed {config.MAX_HOLDINGS} holdings"})
+            if len(chosen) + len(batch) > config.MAX_TRADES_PER_DAY:
+                return f"daily cap of {config.MAX_TRADES_PER_DAY} trades reached"
+            if any(not b["forced"] for b in batch) and \
+                    turnover + sum(b["notional"] for b in batch if not b["forced"]) / nav / 2 > config.MAX_DAILY_TURNOVER + 1e-9:
+                return f"would exceed {config.MAX_DAILY_TURNOVER:.0%} daily turnover"
+        if any(b["is_new"] for b in batch) and _post_count(positions, chosen) >= config.MAX_HOLDINGS:
+            return f"would exceed {config.MAX_HOLDINGS} holdings"
+        chosen.extend(batch)
+        turnover += sum(b["notional"] for b in batch) / nav / 2
+        return None
+
+    for o in cands:
+        if o.get("pair_of"):                                   # a paired buy is only ever admitted with its trim
             continue
-        chosen.append(o)
-        turnover += o["notional"] / nav / 2
+        batch = [o]
+        mate = next((b for b in cands if b.get("pair_of") == o["ticker"]), None) if o.get("pair_buy") else None
+        if mate:
+            batch.append(mate)
+        why = admit(batch)
+        if why and mate:                                       # no room for both: the trim keeps the old behaviour
+            skipped.append({"ticker": mate["ticker"], "reason": f"paired buy for the {o['ticker']} trim not placed: {why}"})
+            o.pop("pair_buy", None)
+            why = admit([o])
+        if why:
+            skipped.append({"ticker": o["ticker"], "reason": why})
 
     # A7 floor on the executable book: drop unpaired discretionary exits (lowest priority first)
     while _post_count(positions, chosen) < config.MIN_HOLDINGS:
@@ -636,6 +694,46 @@ def plan_orders(target_w: dict[str, float], positions: dict[str, dict], px: dict
 
     orders = sorted(sells, key=lambda o: -o["notional"]) + sorted(final_buys, key=lambda o: -o["notional"])
     return orders, skipped
+
+
+def _pair_trims(cands, buy_ideas, positions, px, nav, held_names, forced_exits, untradeable, asset_types, sectors) -> None:
+    """Append one paired BUY candidate per drift trim (see plan_orders). Mutates `cands`."""
+    L = config.RISK_LIMITS
+    trims = sorted([o for o in cands if o["side"] == "SELL" and not o["forced"] and not o["full_exit"]],
+                   key=lambda o: -o["notional"])
+    if not trims:
+        return
+    taken = {o["ticker"] for o in cands}
+    redeployed = sum(o["notional"] for o in cands if o["side"] == "BUY" and o["is_new"])   # the plan's own new buys
+    sell_by_sector: dict = {}
+    for o in cands:
+        if o["side"] == "SELL":
+            sell_by_sector[sectors.get(o["ticker"])] = sell_by_sector.get(sectors.get(o["ticker"]), 0.0) + o["notional"]
+    for tr in trims:
+        need = tr["notional"]
+        if redeployed >= need:                                  # new-name buys already in the plan absorb these proceeds
+            redeployed -= need
+            continue
+        need -= redeployed
+        redeployed = 0.0
+        for t in buy_ideas:
+            if (t in held_names or t in taken or t not in px or t in untradeable or t in forced_exits
+                    or asset_types.get(t, "stock") != "stock"):
+                continue
+            sec = sectors.get(t)
+            sec_val = sum(p["shares"] * px.get(u, 0.0) for u, p in positions.items() if sectors.get(u) == sec) \
+                - sell_by_sector.get(sec, 0.0)
+            room = min(0.995 * L["max_single_weight"] * nav, 0.995 * L["max_sector_weight"] * nav - sec_val)
+            sh = int(math.floor(min(need, room) / px[t]))
+            if sh * px[t] < config.MIN_TRADE_NOTIONAL:
+                continue
+            cands.append({"ticker": t, "side": "BUY", "shares": sh, "price": round(px[t], 4), "notional": round(sh * px[t], 2),
+                          "target_weight": round(sh * px[t] / nav, 4), "current_weight": 0.0, "forced": False,
+                          "is_new": True, "full_exit": False, "forced_reason": "", "replacement": False,
+                          "priority": tr["priority"] - 1e-6, "pair_of": tr["ticker"]})
+            tr["pair_buy"] = t
+            taken.add(t)
+            break
 
 
 def _post_values(positions: dict, orders: list[dict], px: dict) -> dict[str, float]:

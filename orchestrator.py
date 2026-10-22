@@ -24,6 +24,7 @@ import os
 import pandas as pd
 
 import analytics
+import strategies.live as strat_live
 import config
 import data
 import finbert
@@ -235,7 +236,24 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
     db.log_message(run_id, "System", "Quant desk — LSTM model card", fc["model"], "tools", 0,
                    {k: v for k, v in fc.items() if k not in ("forecasts", "oos_preds")})
 
+    # Multi-strategy ensemble (Oct 23): pure Python, feeds Quant's rule_score. Any failure = None = legacy Quant score.
+    ensemble = None
+    try:
+        emit("model", "Multi-strategy ensemble (rolling-IC weights)")
+        ensemble = strat_live.run_live(close, market["volume"], universe, asset_types, shortlist, earnings, news, ciks,
+                                       earn_names, replay=replay, synthetic=synthetic, asof=asof)
+    except Exception as e:  # noqa: BLE001
+        emit("model", f"Ensemble skipped ({str(e)[:100]})")
+    pol_buys = {}
+    if not replay and not synthetic and ensemble is not None:      # buys by well-known US politicians -> Sentiment context only
+        try:
+            from strategies.politicians import get_politician_buys
+            pol_buys = get_politician_buys([t for t in shortlist if asset_types.get(t) == "stock"])
+        except Exception:  # noqa: BLE001
+            pol_buys = {}
+
     ctx = {"morning_brief": brief["text"], "earnings": earnings, "pead": pead, "names": names,
+           "ensemble": ensemble, "politician_buys": pol_buys,
            "earnings_soon": {t: {"date": e.get("next_date"), "time_et": e.get("next_time_et")}
                              for t, e in earnings.items() if e.get("reports_soon") and t in shortlist + holdings},
            "tickers": shortlist, "stocks": stocks, "sectors": sectors, "asset_types": asset_types,
@@ -275,9 +293,10 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         ctx["quant"] = call(QuantAnalyst, "analysis")
         ctx["sentiment"] = call(SentimentAnalyst, "analysis")
 
-        # IPS D12: 2+ of the 4 signal agents failed or returned no signal -> no new trades
+        # IPS D12: 2+ of the 4 signal agents produced no usable score at all -> no new trades.
+        # A labelled rule-based fallback score (e.g. Quant's rule_score after an LLM failure) IS a usable signal.
         def no_signal(name, scores):
-            return name in failed or not any(abs(v.get("score", 0) or 0) > 1e-9 for v in scores.values())
+            return not any(abs(v.get("score", 0) or 0) > 1e-9 for v in scores.values())
         silent = [n for n, sc in (("Equity Research Analyst", ctx["research"]["ratings"]),
                                   ("Quant Analyst", ctx["quant"]["signals"]),
                                   ("Sentiment Analyst", ctx["sentiment"]["sentiment"])) if no_signal(n, sc)]
@@ -304,6 +323,8 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
             px, kind = last_px.get(t), asset_types.get(t, "stock")
             if px and p["avg_cost"] > 0 and px / p["avg_cost"] - 1 <= config.STOP_LOSS:
                 forced[t] = f"stop-loss: {px / p['avg_cost'] - 1:.1%} from cost (IPS A17)"
+            elif px and kind == "stock" and (trail := _trailing_stop(p, px, close.get(t))) is not None:
+                forced[t] = trail
             elif ((ctx["sentiment"]["sentiment"].get(t) or {}).get("score") or 0) <= config.NEWS_SELL_TRIGGER:
                 forced[t] = f"news veto: sentiment {ctx['sentiment']['sentiment'][t]['score']} (IPS C4.4)"
             elif kind == "leveraged_etf" and regime == "risk_off":
@@ -323,6 +344,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
             t for t in unheld
             if comp[t]["composite_10"] >= 7 and (comp[t]["quant"] or 0) >= 0.2 and rank[t] <= 10
             and comp[t]["composite_10"] >= weakest + 1 and not comp[t]["insufficient_data"]
+            and _votes_ok(ctx["quant"]["signals"].get(t))
             and not (asset_types.get(t) == "leveraged_etf" and dd_state["no_new_leveraged"])]
         # IPS A7: below the 12-name target after forced exits -> replacement buys take priority
         survivors = len([t for t in holdings if t not in forced])
@@ -353,6 +375,11 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
                                if r["ticker"] not in forced and r["ticker"] not in {i["ticker"] for i in ctx["invalidated"]}]
         ctx["dd_state"] = dd_state
 
+        # best unheld ideas (same entry filters) that a drift trim's proceeds are paired with
+        trim_ideas = [t for t in eligible_new if asset_types.get(t) == "stock"] + [
+            t for t in unheld if t not in eligible_new and asset_types.get(t) == "stock" and not comp[t]["insufficient_data"]
+            and comp[t]["composite_10"] >= 6 and _votes_ok(ctx["quant"]["signals"].get(t))] if not no_new_trades else []
+
         # ---------------------------------------------- 5. PM <-> Risk loop -- #
         lo_n, hi_n = config.TARGET_HOLDINGS
         max_names = config.TARGET_HOLDINGS_INIT if init_mode else min(hi_n, max(len(holdings), lo_n))
@@ -361,7 +388,8 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         def build(pm, lev_override=None, risk_aversion=4.0, target=None):
             lev_lim = min(x for x in (lev_override, dd_lev, 1.0) if x is not None)
             if target is None:
-                target = analytics.optimise(pm["convictions"], close, sectors, asset_types, pm["equity_exposure"],
+                conv = analytics.vol_managed(pm["convictions"], close, asset_types)
+                target = analytics.optimise(conv, close, sectors, asset_types, pm["equity_exposure"],
                                             regime, macro["vix_level"], max_names, risk_aversion=risk_aversion,
                                             lev_cap_override=lev_lim,
                                             min_weight=max(0.01, config.MIN_TRADE_NOTIONAL / nav * 1.05),
@@ -380,7 +408,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
                                                     init_mode, comp, untradeable, sectors=sectors,
                                                     asset_types=asset_types, caps=caps, lev_cap=lev_eff,
                                                     no_new_leveraged=dd_state["no_new_leveraged"],
-                                                    no_new_leveraged_reason=lev_reason)
+                                                    no_new_leveraged_reason=lev_reason, buy_ideas=trim_ideas)
             post = _post_trade_weights(positions, cash, orders, last_px)
             # Prof. Manero rule 3: the Risk Manager checks the book that will ACTUALLY exist after the
             # 5-trade cap, the $25k minimum and the cash upsizing. A breach here = re-plan, never execute.
@@ -688,8 +716,13 @@ def _why(o, ctx, pm) -> str:
         return note
     sent = ctx["sentiment"]["sentiment"].get(t) or {}
     q = ctx["quant"]["signals"].get(t) or {}
+    if o.get("pair_of"):
+        return "it is the best unheld idea and redeploys the proceeds of a drift trim elsewhere in the book instead of leaving them in cash"
     if o.get("replacement"):
         return "it is the best-ranked unheld name to replace an exit and keep at least 10 holdings"
+    if o["side"] == "SELL" and not o.get("full_exit"):
+        return ("it grew past its target weight (drift trim, IPS A16)"
+                + (" and the proceeds fund a new idea" if o.get("pair_buy") else ""))
     if o["side"] == "SELL":
         return f"its scores fell behind the best alternatives ({q.get('comment') or 'weaker momentum'})"
     if sent.get("score") is not None and abs(sent["score"]) >= 0.3 and sent.get("key_driver"):
@@ -819,6 +852,22 @@ def _backup() -> None:
         pass
 
 
+def _votes_ok(sig: dict | None) -> bool:
+    """New entries need >= 3 agreeing strategies (fewer only if fewer apply, e.g. ETFs). No ensemble = no extra gate."""
+    v = (sig or {}).get("votes")
+    return True if not v else v["long"] >= v["needed"]
+
+
+def _trailing_stop(pos: dict, px: float, series) -> str | None:
+    """Exit reason if the price is >= 8% below its peak since entry (entry cost, closes since the open date, live price)."""
+    since = None
+    if series is not None:
+        since = series.loc[series.index >= str(pos.get("opened_date") or "9999")].dropna().values
+    dd, peak = analytics.trailing_drawdown(pos["avg_cost"], px, since)
+    return f"trailing stop: {dd:.1%} from its peak {peak:.2f} since entry (limit {config.TRAILING_STOP:.0%})" \
+        if dd <= config.TRAILING_STOP else None
+
+
 def _lev_reviews(positions, close, last_px, asset_types) -> list[dict]:
     """IPS C6.4 (Oct 20): a leveraged/inverse ETF needs re-approval when its return since entry < 0, it is
     > 12% below its peak since entry, or it lags leverage x its underlying by more than the decay tolerance."""
@@ -902,6 +951,8 @@ def _reason(o, comp, pm, risk) -> str:
     move = f"weight {o['current_weight']:.1%} -> {o['target_weight']:.1%}"
     if o["forced"]:
         return f"FORCED EXIT — {o['forced_reason']}; {scores}"
+    if o.get("pair_of"):
+        return f"{scores}; best unheld idea, funded by the {o['pair_of']} drift trim (A16). PM: {pm['rationale'][:120]} | Risk: {risk['decision']}"
     return f"{scores}; {move}. PM: {pm['rationale'][:160]} | Risk: {risk['decision']}"
 
 

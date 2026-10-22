@@ -1,6 +1,6 @@
 # PROJECT_NOTES — shared state
 
-Last updated: 2026-10-17. Update this file whenever a decision, limit or owner changes.
+Last updated: 2026-10-23. Update this file whenever a decision, limit or owner changes.
 
 **Order of authority:** (1) Prof. Manero's brief, `Mif_project_investment_AI_manager_tool_v1-4.pdf`
 → (2) our IPS questionnaire → (3) the IPS Default column. Where they conflict, the brief wins,
@@ -463,3 +463,51 @@ Real lessons read like: "Oil breakout signal drove XOM above SPY in neutral regi
 - Quant: a missing/invalid score per name → that name's `rule_score`, comment "Quant: rule-based fallback", `fallback: true`; `quant_fallback` set with a count. A failed Quant call also gets rule scores (D12 still counts it as silent).
 - **CONTRACT CHANGE (CIO):** output gains optional `drop` (list) and `trim` ({ticker: fraction kept}) for discretionary BUYs; validated output adds `llm_decision`. Edits logged as stage `cio_edits` and re-checked by Risk (`risk_recheck`). Init day: CIO cannot decline a Risk-approved book, init keeps ≥ 10 names. Minutes always start "Decision: APPROVE/REJECT"; an overridden LLM verdict moves to `dissent_noted`.
 - Run-3 raw output was lost (DB reset); test fixture reconstructed from the bug report. Tests: `tests/test_schema_drift.py` (3); full suite 16/16 files pass.
+
+## Oct 23 (2): multi-strategy ensemble in Quant, profit-taking without cash, backtest (mock/tests only, no live trades)
+**Hard constraint kept:** nothing visible changes. Dashboard layout, tabs, agent roster, IPS limits, report headings and `trades.csv` columns are
+byte-for-byte the same; `tests/test_ui_unchanged.py` renders the app (diagnostics off and on) and the report on a fixture DB and compares it with a
+golden snapshot taken from the pre-change code (b528a18). New data lives only in the Quant "raw output" expander.
+
+**A. `strategies/` (pure Python, no LLM tokens; one file per signal)**
+- 17 modules: `xs_momentum_12_1, ts_trend, industry_momentum, residual_momentum, high_52w, st_reversal_1w, pead_sue, eps_revisions, earnings_premium,
+  quality_gp, low_beta, high_volume_premium, insider_buying, news_surprise, sector_rotation, etf_trend_200dma, turn_of_month`. Each returns a raw panel;
+  `base.Strategy` turns it into a sector-neutral z (within GICS sector, whole cross-section if a sector has < 5 names), winsorised ±3, plus a one-line reason.
+  Computed on the whole S&P 500 cross-section, read out for the shortlist + holdings.
+- `edgar.py`: SEC Form 4 (free, needs `SEC_USER_AGENT` in `.env`), open-market P/S only, cached daily, ≤ 75 s budget, any failure = signal skipped (verified live: 30 names, 1 with insider buys).
+  `quality_gp` = average rank of gross margin and ROA (yfinance has no gross profit/assets). `news_surprise` reads the existing FinBERT headline scores.
+  `turn_of_month` = tilt only (+0.03 on every Quant score, same shift for all names, never a vote).
+- **Weights** (`ensemble.py`, shared by the live run and the backtest): rank IC vs the 5-day forward return, last 60 sessions, only days whose return is realised
+  (walk-forward); shrunk IC = mean × max(0, 1 − 1/t²); t < 1 → 0; floor 0; cap 20% (excess flows only to proven strategies, otherwise it stays unallocated).
+  **t uses n/5 observations** (5-day windows overlap; the naive t is 2.2x too big). < 60 sessions, or snapshot-only signals with no history → equal prior 1/N
+  (`ENSEMBLE["unvalidated"] = "zero"` removes the prior for snapshot-only signals).
+- **Into Quant:** `rule_score = (1 − b)·legacy + b·ensemble`, `b = 0.5 × total allocated weight` (thin evidence = the legacy score keeps its say). The LLM still owns the
+  score (same schema, same role_prompt). Entry (new names via `eligible_new`) additionally needs ≥ 3 agreeing strategies (z ≥ +0.5; every strategy with data votes;
+  fewer if fewer apply, e.g. ETFs). Not applied to the A7 replacement fill or the C5.3 earnings fast track.
+- **CONTRACT CHANGE (additive, Quant output):** per signal `votes {long, short, of, needed}` and `strategies {name: {z, w, why}}`; top level `strategy_ensemble {mode, allocated, weights, ic_table, skipped, tom_tilt, asof}`;
+  `breakdown.ensemble`. Existing keys untouched. Failure anywhere = `ctx["ensemble"] = None` = legacy Quant score.
+- **Politicians' buys → Sentiment (not Quant):** alternative-data/flow context, disclosures arrive up to 45 days late, so it must not score on its own. `strategies/politicians.py`
+  (Quiver Quant if `QUIVER_API_KEY` is set, else the public House/Senate Stock Watcher dumps — both returned 403 on Oct 23, so it is currently **empty and silent**). Only buys by
+  `config.POLITICIAN_WATCHLIST` in the last 45 days, appended to the Sentiment prompt as one block; without data the prompt is byte-identical to before.
+- Volatility-managed sizing = optimiser overlay `analytics.vol_managed` (positive stock convictions × median_vol/own_vol, clip 0.6–1.25; ETFs untouched; IPS limits stay hard constraints).
+
+**B. Profit-taking without cash**
+- Drift trims (A16 ±5%): `plan_orders(..., buy_ideas=[...])` pairs each partial unforced SELL with a BUY of the best unheld idea (same entry filters, stocks only, 20%/35% caps, sized to the proceeds).
+  A pair takes 2 of the 5 slots and competes by priority; with only one slot left the trim goes alone and the A12 cash logic handles it as before. Not on init day; skipped if the plan already
+  has new-name buys that absorb the proceeds. Order dicts gain `pair_of` / `pair_buy` (flag to the Trader/Rationale owner: the reason text says "funded by the X drift trim").
+- Trailing stop: stocks only, forced exit if a position is ≥ 8% below its peak since entry (max of cost, closes since `opened_date`, live price) — `config.TRAILING_STOP`; the −10%-from-cost stop (A17) is unchanged
+  and takes precedence. Leveraged ETFs keep the C6.4 −12% review (an 8% stop on a 3x fund would fire constantly).
+
+**C. Validation (files only): `python -m backtest.data_bt` (cache) then `python -m backtest.run_backtest` → `reports/backtest/summary.md` + charts/CSVs**
+- Rule-based sleeve only (no LLM: look-ahead), 2023-10-23 → 2026-10-22, next-open fills, real `plan_orders`, 0 cost (A20). Every row is the mean of 6 staggered start weeks, with the Sharpe range = noise floor.
+- Monte Carlo: 10k stationary-block bootstrap paths (5-day blocks), 15 sessions, (strategy, SPY) pairs drawn jointly.
+- Biases stated in the summary: survivorship (today's S&P 500 — standalone momentum CAGRs are inflated), no fundamentals/news history, realised earnings dates, single bull regime, in-sample bootstrap.
+
+**Results (see summary.md for the full tables):** the rule-based sleeve did not beat SPY on Sharpe; ensemble vs legacy vs equal-weight differences are inside the start-date noise;
+the trailing stop lowers max DD and raises turnover; trim pairing never fired in the backtest (every trim already had a new-name buy in the same plan), so it is covered by unit tests only.
+Live today: no price-based strategy clears the overlap-adjusted t ≥ 1 bar, so the ensemble's allocated weight comes only from snapshot-only strategies at the 1/N prior.
+
+**Decisions for Dev:** (1) `ENSEMBLE["unvalidated"]`: keep the literal "equal prior" for snapshot-only signals (current) or set "zero" (then the ensemble is silent until something clears t ≥ 1);
+(2) `ENSEMBLE["blend"]` 0.5 vs 1.0 (backtest: legacy half may dilute the ensemble, not significant, do not tune on 3 years); (3) provide `QUIVER_API_KEY` or drop the politician block;
+(4) `SEC_USER_AGENT` still the placeholder; (5) re-run the backtest after any change to a strategy.
+**Tests added:** `test_strategies` (10), `test_ensemble` (8), `test_quant_ensemble` (6), `test_profit_taking` (12), `test_backtest` (9), `test_alt_data` (6), `test_ui_unchanged` (4).

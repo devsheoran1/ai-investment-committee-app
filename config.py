@@ -238,3 +238,27 @@ PRICES_CSV = os.path.join(BASE_DIR, "prices.csv")   # Brief §11 deliverable
 UNIVERSE_CSV = os.path.join(DATA_DIR, "universe_sp500.csv")
 CACHE_DIR = os.path.join(DATA_DIR, "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
+
+
+# --------------------------------------------------------------------------- #
+# Multi-strategy ensemble inside the Quant agent (Oct 23) + profit-taking without cash
+# --------------------------------------------------------------------------- #
+ENSEMBLE = {
+    "enabled": True,
+    "blend": 0.5,                  # rule_score = (1 - blend) x legacy technical/model score + blend x ensemble
+    "ic_sessions": 60,             # rolling window of out-of-sample ICs (5-day forward return)
+    "ic_horizon": 5,
+    "weight_cap": 0.20,            # per-strategy cap
+    "min_t": 1.0,                  # t-stat below this -> weight 0
+    "unvalidated": "equal",        # snapshot-only signals (no point-in-time history): "equal" prior or "zero"
+    "vote_z": 0.5,                 # a strategy "agrees" when its z >= +0.5
+    "min_votes": 3,                # new entries need >= 3 agreeing strategies (fewer if fewer apply, e.g. ETFs)
+    "tom_tilt": 0.03,              # turn-of-month: +0.03 on the Quant score, never a vote
+    "z_to_score": 1.5,             # ensemble z -> score: clip(z / 1.5, -1, 1)
+}
+VOL_MANAGED = {"enabled": True, "lookback": 63, "floor": 0.6, "cap": 1.25}   # optimiser overlay (Moreira-Muir style)
+TRAILING_STOP = -0.08                   # exit if a position falls 8% from its peak since entry (plus A17 -10% from cost)
+PAIR_TRIMS = True                       # A16 drift trims are paired with a buy of the best unheld idea
+# "Top" US politicians whose disclosed BUYS the Sentiment agent is shown (editable; matched on the member's name)
+POLITICIAN_WATCHLIST = ["Pelosi", "Crenshaw", "Gottheimer", "McCaul", "Khanna", "Tuberville", "Greene", "Green, Mark",
+                        "Sessions", "Fallon", "Cleo Fields", "Wasserman", "Rouzer"]

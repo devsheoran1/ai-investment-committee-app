@@ -1,5 +1,7 @@
 import numpy as np
 
+import config
+
 from .base import Agent, as_map, compact, clip, entry
 
 
@@ -42,6 +44,9 @@ Score -1..+1 (0 = no edge). Use the range: the PM needs to see who is strongest.
         for m, key in (("lstm", "lstm"), ("kronos", "kronos_ret"), ("lgbm", "lgbm")):
             if w.get(m):
                 model_z[m] = self._z({t: (live.get(t) or {}).get(key) for t in ctx["tickers"]})
+        ens = ctx.get("ensemble") or {}
+        e_scores = ens.get("scores") or {}
+        b_eff = config.ENSEMBLE["blend"] * float(ens.get("allocated") or 0.0)     # thin IC evidence = legacy score keeps its say
         out = {}
         for t in ctx["tickers"]:
             x = T[t]
@@ -55,12 +60,19 @@ Score -1..+1 (0 = no edge). Use the range: the PM needs to see who is strongest.
             wm = sum(w.get(m, 0) for m in model_z)
             models = sum(w[m] * model_z[m][t] for m in model_z) / wm if wm else 0.0
             raw = (1 - wm) * tech + wm * models
+            e = (e_scores.get(t) or {}).get("score")
+            if e is not None:                                              # A2/A3: multi-strategy ensemble (strategies/)
+                raw = (1 - b_eff) * raw + b_eff * e
+            if ens:
+                raw += ens.get("tom_tilt") or 0.0                          # turn-of-month: tilt only, never a vote
             vol = (x.get("vol_3m_ann_pct") or 30) / 100
             score = raw / (1 + max(0.0, vol - 0.40) / 0.40)                # vol risk-adjusts, never a buy signal
             flags = [f for f, ok in (("overbought", rsi > 75), ("oversold_watch", rsi < 25),
                                      ("below_200dma", not above200)) if ok]
             out[t] = {"breakdown": {**b, "models": round(models, 2)}, "rule_score": round(float(np.clip(score, -1, 1)), 2),
                       "flags": flags}
+            if e is not None:
+                out[t]["breakdown"]["ensemble"] = round(e, 2)
         return out
 
     def build_prompt(self, ctx):
@@ -156,6 +168,11 @@ Score -1..+1 (0 = no edge). Use the range: the PM needs to see who is strongest.
             sig[t] = {"score": score, "comment": "Quant: rule-based fallback" if fallback else str(r.get("comment", ""))[:160],
                       "fallback": fallback,
                       "breakdown": bd[t]["breakdown"], "flags": bd[t]["flags"], "rule_score": bd[t]["rule_score"]}
+            es = ((ctx.get("ensemble") or {}).get("scores") or {}).get(t)
+            if es:
+                sig[t]["votes"] = {"long": es["votes_long"], "short": es["votes_short"], "of": es["n_strategies"],
+                                   "needed": es["min_votes"]}
+                sig[t]["strategies"] = {n: {"z": v["z"], "w": v["w"], "why": v["reason"]} for n, v in es["strategies"].items()}
             lv = (race.get("live") or {}).get(t) or {}
             if lv.get("kronos_ret") is not None:
                 sig[t]["kronos_ret"], sig[t]["kronos_p_up"] = lv["kronos_ret"], lv["kronos_p_up"]
@@ -170,4 +187,7 @@ Score -1..+1 (0 = no edge). Use the range: the PM needs to see who is strongest.
             res["quant_fallback"] = f"Quant: rule-based fallback for {n_fb}/{len(sig)} names"
         if race:
             res["model_scoreboard"] = race["scoreboard_line"]
+        ens = ctx.get("ensemble")
+        if ens:
+            res["strategy_ensemble"] = {k: ens.get(k) for k in ("mode", "allocated", "weights", "ic_table", "skipped", "tom_tilt", "asof")}
         return res
