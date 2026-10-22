@@ -7,7 +7,7 @@ Sentiment / News Analyst (IPS C4.1-C4.6, owner Mer).
     no news  -> score null, shown "n/a" (never 0.0); its 30% weight is redistributed pro rata (C5.2)
     guard    > 70% of names WITH headlines scored exactly 0.0 -> one retry on gpt-oss-120b (C4.6)
 """
-from .base import Agent, compact, clip
+from .base import Agent, as_map, compact, clip, entry
 
 POS = ("beat", "surge", "record", "upgrade", "raises", "growth", "strong", "rally", "wins", "soar", "buy")
 NEG = ("miss", "falls", "cut", "downgrade", "lawsuit", "probe", "weak", "plunge", "recall", "slump", "fine")
@@ -101,7 +101,7 @@ If a ticker's headlines are all noise, score it 0 and say "noise only". Tickers 
         return out, model
 
     def validate(self, out, ctx):
-        src = out.get("sentiment") or {}
+        src = as_map(out.get("sentiment"))
         sent = {}
         for t in ctx["tickers"]:
             heads = ctx["news"].get(t) or []
@@ -110,9 +110,10 @@ If a ticker's headlines are all noise, score it 0 and say "noise only". Tickers 
             if not heads:                                       # no news -> n/a, never 0.0 (C4.6)
                 sent[t] = {"score": None, "key_driver": "no news", "finbert": None, "llm_score": None, "n_headlines": 0}
                 continue
-            r = src.get(t) or {}
-            llm_score = None if r.get("score") is None else round(clip(r.get("score")), 2)
-            ids = [i for i in (r.get("based_on") or []) if isinstance(i, int) and 0 <= i < len(heads)]
+            r = entry(src, t)
+            v = clip(r.get("score"), default=None)
+            llm_score = None if v is None else round(v, 2)
+            ids = [i for i in (r.get("based_on") if isinstance(r.get("based_on"), list) else []) if isinstance(i, int) and 0 <= i < len(heads)]
             sent[t] = {"score": llm_score,                       # final = LLM score (C4.6); FinBERT logged alongside
                        "key_driver": str(r.get("key_driver", "no answer" if llm_score is None else ""))[:150],
                        "finbert": fb_avg, "llm_score": llm_score, "n_headlines": len(heads),

@@ -1,6 +1,6 @@
 import numpy as np
 
-from .base import Agent, compact, clip
+from .base import Agent, as_map, compact, clip, entry
 
 RATINGS = ("buy", "hold", "sell", "insufficient_data")
 
@@ -68,18 +68,19 @@ current estimate and the recommendation trend; add one line on whether the setup
 
     def validate(self, out, ctx):
         ratings = {}
-        src = out.get("ratings") or {}
+        src = as_map(out.get("ratings"))
         for t, d in ctx["fundamentals"].items():
             if d.get("insufficient_data"):   # IPS C2.7: excluded this cycle, not neutral
                 ratings[t] = {"rating": "insufficient_data", "score": 0.0,
                               "thesis": f"insufficient data ({d.get('missing_core_metrics')} core metrics missing)"}
                 continue
-            r = src.get(t) or {}
+            r = entry(src, t)
             rating = str(r.get("rating", "hold")).lower()
             ratings[t] = {"rating": rating if rating in RATINGS[:3] else "hold", "score": round(clip(r.get("score")), 2),
                           "thesis": str(r.get("thesis", "no view"))[:200],
                           "flags": ctx["research_flags"].get(t, [])}
             if r.get("earnings_preview") and ((ctx.get("earnings") or {}).get(t) or {}).get("reports_soon"):
                 ratings[t]["earnings_preview"] = str(r["earnings_preview"])[:200]
-        return {"ratings": ratings, "top_pick": out.get("top_pick"),
-                "least_preferred": out.get("least_preferred")}
+        pick = lambda x: x if isinstance(x, str) and x in ratings else None     # never a ticker outside the shortlist
+        return {"ratings": ratings, "top_pick": pick(out.get("top_pick")),
+                "least_preferred": pick(out.get("least_preferred"))}

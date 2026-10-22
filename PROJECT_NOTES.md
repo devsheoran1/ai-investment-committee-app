@@ -456,3 +456,10 @@ Real lessons read like: "Oil breakout signal drove XOM above SPY in neutral regi
 - Fix: a SELL clamped to 0 shares no longer logs a 0-share "trade" (it used to count toward the 5/day cap).
 - Tests: `tests/test_followup.py` (11): retries/backoff, PM+CIO down, reconciliation (NAV, cash ≥ 0, DB = trades.csv = fills), init exemption, 5/day cap, rejects not counted, 3 runs/day (errored runs don't count; replay exempt by design), restart mid-execution / mid-run, duplicate same-day snapshots, <2 sessions placeholder.
 - Open risk: a process killed mid-execution leaves the run in `executing` with a partial book (fail-closed, no double execution). Recovery is manual: inspect, then re-run the committee.
+
+## Oct 23: run-3 Quant schema-drift fix
+- Bug: Quant LLM returned flat numbers (`{"NUE": -0.1}`) + tickers outside the shortlist → validate() crashed → Quant FAILED → all Q = 0.0.
+- `committee/base.py`: `as_map()` / `entry()` accept `{"T": {"score": x}}`, `{"T": x}` or `{"T": "x"}`; anything malformed → {} → fallback. Used by Quant, Sentiment, Research, Macro validate(); unknown tickers are never read (Research top_pick/least_preferred must be in the shortlist).
+- Quant: a missing/invalid score per name → that name's `rule_score`, comment "Quant: rule-based fallback", `fallback: true`; `quant_fallback` set with a count. A failed Quant call also gets rule scores (D12 still counts it as silent).
+- **CONTRACT CHANGE (CIO):** output gains optional `drop` (list) and `trim` ({ticker: fraction kept}) for discretionary BUYs; validated output adds `llm_decision`. Edits logged as stage `cio_edits` and re-checked by Risk (`risk_recheck`). Init day: CIO cannot decline a Risk-approved book, init keeps ≥ 10 names. Minutes always start "Decision: APPROVE/REJECT"; an overridden LLM verdict moves to `dissent_noted`.
+- Run-3 raw output was lost (DB reset); test fixture reconstructed from the bug report. Tests: `tests/test_schema_drift.py` (3); full suite 16/16 files pass.

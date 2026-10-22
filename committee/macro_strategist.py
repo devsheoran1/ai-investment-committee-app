@@ -1,4 +1,4 @@
-from .base import Agent, compact, clip
+from .base import Agent, as_map, compact, clip, entry
 
 TILTS = ("overweight", "neutral", "underweight")
 
@@ -38,7 +38,7 @@ stated reason grounded in the data (e.g. oil up 10% in 5 days). Never force trad
 
     def validate(self, out, ctx):
         tilts = dict(ctx["rule_tilts"])
-        ov = out.get("tilt_override") or {}
+        ov = as_map(out.get("tilt_override"))
         applied = None
         sec, tilt = str(ov.get("sector", "")), str(ov.get("tilt", "")).lower()
         if sec in tilts and tilt in TILTS and tilt != tilts[sec]:
@@ -58,6 +58,6 @@ stated reason grounded in the data (e.g. oil up 10% in 5 days). Never force trad
             "inverse_hedge_range": rules["inverse"],
             "sector_tilts": tilts,
             "tilt_override": applied,
-            "watch_list": [str(x)[:100] for x in (out.get("watch_list") or [])][:3],
+            "watch_list": [str(x)[:100] for x in (out.get("watch_list") if isinstance(out.get("watch_list"), list) else [])][:3],
             "rationale": str(out.get("rationale", ""))[:600],
         }

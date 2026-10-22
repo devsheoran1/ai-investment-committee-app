@@ -37,6 +37,27 @@ def compact(obj) -> str:
     return json.dumps(obj, separators=(",", ":"), default=str)
 
 
+def as_map(x) -> dict:
+    """Top-level LLM field that should be a dict; anything else (list, str, None) = empty. Never crashes."""
+    return x if isinstance(x, dict) else {}
+
+
+def entry(src: dict, t: str, key: str = "score") -> dict:
+    """Per-ticker LLM entry, schema-drift tolerant: {"NUE": {"score": -0.1}} or flat {"NUE": -0.1} -> dict.
+    Missing / malformed -> {} (the caller's fallback applies)."""
+    v = as_map(src).get(t)
+    if isinstance(v, dict):
+        return v
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return {key: v}
+    if isinstance(v, str):
+        try:
+            return {key: float(v)}
+        except ValueError:
+            return {}
+    return {}
+
+
 def clip(x, lo=-1.0, hi=1.0, default=0.0) -> float:
     try:
         return max(lo, min(hi, float(x)))

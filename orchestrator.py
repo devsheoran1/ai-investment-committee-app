@@ -452,6 +452,11 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
             cio["committee_summary"] = (f"CIO unavailable, rules fallback: Risk {risk['decision']}; {len(orders)} order(s) kept "
                                         f"(Risk-passed, C5.3 entry rule, forced exits).")
             db.log_message(run_id, "CIO", "CIO — rules fallback (agent failed)", "rules", "decision", 0, cio)
+        if cio["decision"] == "approve" and (cio.get("drop") or cio.get("trim")):
+            orders, cio["applied_changes"] = apply_cio_edits(orders, cio, init_mode)
+            db.log_message(run_id, "CIO", "CIO — order edits (drop/trim, re-checked by Risk)", "rules", "cio_edits", 0,
+                           {"decision": cio["decision"], "applied_changes": cio["applied_changes"],
+                            "drop": cio["drop"], "trim": cio["trim"]})
         if cio["decision"] != "approve":
             # keep the portfolio, but forced risk exits (stop-loss, news veto, ...) still go through
             orders = [o for o in orders if o["forced"]]
@@ -842,6 +847,28 @@ def _lev_reviews(positions, close, last_px, asset_types) -> list[dict]:
                         "entry_px": round(entry, 2), "invalidation_px": None, "last_px": round(px, 2),
                         "since_entry": round(ret, 4), "type": "leveraged_review"})
     return out
+
+
+def apply_cio_edits(orders: list[dict], cio: dict, init_mode: bool) -> tuple[list[dict], list[str]]:
+    """CIO drop/trim of discretionary BUYs. Init day keeps >= MIN_HOLDINGS names. Changed lists go back to Risk."""
+    out, notes = [dict(o) for o in orders], []
+    floor = config.MIN_HOLDINGS if init_mode else 0
+    for t in cio.get("drop") or []:
+        buys = [o for o in out if o["side"] == "BUY"]
+        if len(buys) - 1 < floor:
+            notes.append(f"drop {t} ignored (init needs >= {floor} names)")
+            continue
+        out = [o for o in out if not (o["ticker"] == t and o["side"] == "BUY" and not o.get("forced"))]
+        notes.append(f"dropped {t}")
+    for o in out:
+        f = (cio.get("trim") or {}).get(o["ticker"])
+        if f and o["side"] == "BUY" and not o.get("forced"):
+            new = int(o["shares"] * f)
+            if new > 0:
+                o["notional"] = round(o["notional"] * new / o["shares"], 2)
+                o["shares"] = new
+                notes.append(f"trimmed {o['ticker']} to {f:.0%}")
+    return out, notes
 
 
 def order_key(orders: list[dict]) -> frozenset:

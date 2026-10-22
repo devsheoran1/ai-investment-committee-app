@@ -1,6 +1,6 @@
 import numpy as np
 
-from .base import Agent, compact, clip
+from .base import Agent, as_map, compact, clip, entry
 
 
 class QuantAnalyst(Agent):
@@ -138,20 +138,23 @@ Score -1..+1 (0 = no edge). Use the range: the PM needs to see who is strongest.
         return rb, f"{model} -> rule-based fallback"
 
     def validate(self, out, ctx):
-        src = out.get("signals") or {}
+        src = as_map(out.get("signals"))        # tickers outside the shortlist are simply never read
         bd = self.breakdown(ctx)
         race = ctx.get("race") or {}
         sig = {}
         for t in ctx["tickers"]:
-            r = src.get(t) or {}
-            score = round(clip(r.get("score")), 2)
+            r = entry(src, t)
+            fallback = clip(r.get("score"), default=None) is None if r else True
+            # missing / invalid LLM score -> the rules score already computed, flagged; never a silent 0.0
+            score = round(bd[t]["rule_score"] if fallback else clip(r.get("score")), 2)
             x = ctx["technicals"][t]
             rsi, above200 = x.get("rsi_14") or 50, (x.get("px_vs_200dma_pct") or 0) > 0
             if rsi > 75 and score > 0:                                   # C3.3: RSI > 75 cuts the score
                 score = round(score * 0.5, 2)
             if rsi < 25 and not above200:                                # C3.3: no falling knives
                 score = min(score, 0.0)
-            sig[t] = {"score": score, "comment": str(r.get("comment", ""))[:160],
+            sig[t] = {"score": score, "comment": "Quant: rule-based fallback" if fallback else str(r.get("comment", ""))[:160],
+                      "fallback": fallback,
                       "breakdown": bd[t]["breakdown"], "flags": bd[t]["flags"], "rule_score": bd[t]["rule_score"]}
             lv = (race.get("live") or {}).get(t) or {}
             if lv.get("kronos_ret") is not None:
@@ -160,8 +163,11 @@ Score -1..+1 (0 = no edge). Use the range: the PM needs to see who is strongest.
         res = {"signals": sig, "model_reliability": rel if rel in ("low", "medium", "high") else "low",
                "model_weights": race.get("weights") or {"lstm": 0.0, "kronos": 0.0, "lgbm": 0.0},
                "note": str(out.get("note", ""))[:400]}
+        n_fb = sum(1 for v in sig.values() if v["fallback"])
         if out.get("quant_fallback"):
             res["quant_fallback"] = out["quant_fallback"]
+        elif n_fb:
+            res["quant_fallback"] = f"Quant: rule-based fallback for {n_fb}/{len(sig)} names"
         if race:
             res["model_scoreboard"] = race["scoreboard_line"]
         return res
