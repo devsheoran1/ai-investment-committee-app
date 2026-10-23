@@ -201,8 +201,9 @@ FAST_TRACK = {"min_sentiment": 0.7, "min_quant_10": 5.0, "max_weight": 0.10}   #
 
 # Two-stage screener (IPS B9, decided Oct 20). Momentum/trend capped at 50% of the effective weight.
 SCREEN_STAGE1 = {"weights": {"mom_12_1_volscaled": 0.39, "industry_mom_1m": 0.24, "trend": 0.25, "reversal_1w": 0.12},
-                 "keep": 60}
-SCREEN_STAGE2 = {"weights": {"stage1": 0.57, "revisions_drift": 0.27, "quality": 0.16}, "keep": 30}
+                 "keep": 60, "per_sector": 5, "overall": 5}      # top 5 per GICS sector + the 5 best overall
+SCREEN_STAGE2 = {"weights": {"stage1": 0.57, "revisions_drift": 0.27, "quality": 0.16}, "keep": 30,
+                 "min_per_sector": 1, "max_per_sector": 5}
 
 # 20-day replay (IPS D6-D9, Stage 6). Separate DB, decisions on data up to the previous close, fills at the open.
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -245,12 +246,15 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 # --------------------------------------------------------------------------- #
 ENSEMBLE = {
     "enabled": True,
-    "blend": 0.5,                  # rule_score = (1 - blend) x legacy technical/model score + blend x ensemble
+    "blend": 0.75,                 # rule_score = (1 - blend) x legacy technical/model score + blend x ensemble
+                                   # Oct 23: 0.5 -> 0.75, chosen AFTER seeing the 2023-26 backtest (in-sample, not significant)
     "ic_sessions": 60,             # rolling window of out-of-sample ICs (5-day forward return)
     "ic_horizon": 5,
     "weight_cap": 0.20,            # per-strategy cap
     "min_t": 1.0,                  # t-stat below this -> weight 0
     "unvalidated": "equal",        # snapshot-only signals (no point-in-time history): "equal" prior or "zero"
+    "snapshot_prior": 0.5,         # snapshot-only prior = 0.5 x 1/N ...
+    "snapshot_cap": 0.05,          # ... capped at 5% each, replaced by the measured IC once 60 sessions exist
     "vote_z": 0.5,                 # a strategy "agrees" when its z >= +0.5
     "min_votes": 3,                # new entries need >= 3 agreeing strategies (fewer if fewer apply, e.g. ETFs)
     "tom_tilt": 0.03,              # turn-of-month: +0.03 on the Quant score, never a vote
@@ -260,5 +264,6 @@ VOL_MANAGED = {"enabled": True, "lookback": 63, "floor": 0.6, "cap": 1.25}   # o
 TRAILING_STOP = -0.08                   # exit if a position falls 8% from its peak since entry (plus A17 -10% from cost)
 PAIR_TRIMS = True                       # A16 drift trims are paired with a buy of the best unheld idea
 # "Top" US politicians whose disclosed BUYS the Sentiment agent is shown (editable; matched on the member's name)
+POLITICIAN_SIGNAL = False   # Oct 23: off (no QUIVER_API_KEY, STOCK Act filings lag up to 45 days); not read by Sentiment
 POLITICIAN_WATCHLIST = ["Pelosi", "Crenshaw", "Gottheimer", "McCaul", "Khanna", "Tuberville", "Greene", "Green, Mark",
                         "Sessions", "Fallon", "Cleo Fields", "Wasserman", "Rouzer"]

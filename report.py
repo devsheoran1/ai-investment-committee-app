@@ -19,36 +19,48 @@ import config
 import data
 import database as db
 import lab_summary
+import tracker
+import valuation
 
 REPORT_DIR = os.getenv("FUND_REPORT_DIR", os.path.join(config.BASE_DIR, "reports"))
 
 
-def _last_prices(day: str) -> dict[str, float]:
-    """Price of each holding as of `day`: prices.csv if present, else the run's stored prices."""
-    px = {}
-    if os.path.exists(config.PRICES_CSV):
+def _marks(day: str) -> valuation.Marks:
+    """Marks as of `day` (never a close dated before a fill; SPY on the same date as the fund). prices.csv, else {}."""
+    close = _close_panel(day)
+    snaps = db.get_snapshots()
+    snaps = snaps[snaps["date"] <= day]
+    return valuation.mark(db.get_positions(), close, db.get_trades(), snaps)
+
+
+def _close_panel(day: str) -> pd.DataFrame:
+    try:
         p = pd.read_csv(config.PRICES_CSV, index_col="date", parse_dates=True)
-        p = p[p.index <= pd.Timestamp(day) + pd.Timedelta(days=1)]
-        if len(p):
-            px = p.ffill().iloc[-1].dropna().to_dict()
-    with db.conn() as c:
-        row = c.execute("SELECT proposal FROM runs WHERE substr(started_at,1,10)<=? AND proposal IS NOT NULL "
-                        "ORDER BY id DESC LIMIT 1", (day,)).fetchone()
-    if row:
-        px = {**json.loads(row["proposal"]).get("last_px", {}), **px} if not px else px
-    return px
+    except (OSError, ValueError):                       # missing / half-written prices.csv: marks fall back to fill prices
+        return pd.DataFrame()
+    return p[p.index <= pd.Timestamp(day) + pd.Timedelta(days=1)]
 
 
-def _kpis(snaps: pd.DataFrame) -> dict:
+def _last_prices(day: str) -> dict[str, float]:
+    return _marks(day).px
+
+
+def _kpis(snaps: pd.DataFrame, marks: valuation.Marks | None = None) -> dict:
+    """NAV, return and SPY at ONE mark date. With `marks` (live book) NAV = cash + marked positions and SPY is measured
+    from the inception SPY to the same mark date; without, the latest snapshot (NAV and SPY of the same snapshot)."""
     if snaps.empty:
         return {}
     eq = snaps["total_equity"]
+    if marks is not None and marks.px:
+        eq = pd.concat([eq.iloc[:-1], pd.Series([db.get_cash() + sum(p["shares"] * marks.px[t] for t, p in db.get_positions().items())])],
+                       ignore_index=True)
     peak = eq.cummax().clip(lower=config.STARTING_CAPITAL)
     daily = eq.pct_change().dropna()
     spy = snaps["benchmark_px"]
     return {"nav": float(eq.iloc[-1]),
             "total_return": float(eq.iloc[-1] / config.STARTING_CAPITAL - 1),
-            "spy_return": float(spy.iloc[-1] / spy.iloc[0] - 1) if spy.iloc[0] else 0.0,
+            "spy_return": (marks.spy_return if marks is not None and marks.spy_return is not None
+                           else float(spy.iloc[-1] / spy.iloc[0] - 1) if spy.iloc[0] else 0.0),
             "max_drawdown": float((eq / peak - 1).min()),
             "win_rate_days": float((daily > 0).mean()) if len(daily) else None,
             "days": int(len(snaps))}
@@ -100,11 +112,12 @@ def forum_post(day: str | None = None) -> str:
     """IPS E4: ticker · shares · weight · P&L, plus NAV and return since inception."""
     day = day or db.today()
     snaps = db.get_snapshots()
-    k = _kpis(snaps[snaps["date"] <= day])
+    mk = _marks(day)
+    k = _kpis(snaps[snaps["date"] <= day], mk)
     nav = k.get("nav", config.STARTING_CAPITAL)
-    h = _holdings_table(_last_prices(day), nav)
+    h = _holdings_table(mk.px, nav)
     lines = [f"{config.FUND_NAME} — portfolio as of {day}",
-             f"NAV ${nav:,.0f} | since inception {k.get('total_return', 0):+.2%} | SPY {k.get('spy_return', 0):+.2%}",
+             f"NAV ${nav:,.0f} | since inception {valuation.pct(k.get('total_return', 0))} | SPY {valuation.pct(k.get('spy_return', 0))}",
              ""]
     for r in h.itertuples():
         lines.append(f"{data.label(r.ticker)[:34]:<34} {int(r.shares):>6} sh  {r.weight:>5.1%}  P&L {r.pnl:+,.0f} ({r.pnl_pct:+.1%})")
@@ -118,7 +131,7 @@ def forum_post(day: str | None = None) -> str:
         bits = [f"{'bought' if r.action == 'BUY' else 'sold'} {data.label(r.symbol).split(' · ')[-1]}" for r in t_day.itertuples()]
         first = str(t_day.iloc[0]["reason"]).split(". ")[0][:140]
         l1 = f"Today: {', '.join(bits)}. Lead reason: {first}."
-    l2 = (f"Return since inception {k.get('total_return', 0):+.2%} vs SPY {k.get('spy_return', 0):+.2%} "
+    l2 = (f"Return since inception {valuation.pct(k.get('total_return', 0))} vs SPY {valuation.pct(k.get('spy_return', 0))} "
           f"({(k.get('total_return', 0) - k.get('spy_return', 0)) * 1e4:+.0f} bps).")
     msgs = _day_messages(day)
     brief = (msgs.get("Morning Brief") or {}).get("content") or {}
@@ -134,7 +147,8 @@ def daily_report(day: str | None = None) -> str:
     day = day or db.today()
     os.makedirs(REPORT_DIR, exist_ok=True)
     snaps = db.get_snapshots()
-    k = _kpis(snaps[snaps["date"] <= day])
+    mk = _marks(day)
+    k = _kpis(snaps[snaps["date"] <= day], mk)
     nav = k.get("nav", config.STARTING_CAPITAL)
     trades = db.get_trades()
     t_day = trades[trades["date"] == day].sort_values("id") if not trades.empty else trades
@@ -142,8 +156,8 @@ def daily_report(day: str | None = None) -> str:
     r_day = runs[runs["started_at"].str[:10] == day].sort_values("id") if not runs.empty else runs
 
     md = [f"# Daily report — {day}", "",
-          f"**NAV** ${nav:,.0f} · **since inception** {k.get('total_return', 0):+.2%} "
-          f"(SPY {k.get('spy_return', 0):+.2%}) · **max drawdown** {k.get('max_drawdown', 0):.2%} · "
+          f"**NAV** ${nav:,.0f} · **since inception** {valuation.pct(k.get('total_return', 0))} "
+          f"(SPY {valuation.pct(k.get('spy_return', 0))}) · **max drawdown** {k.get('max_drawdown', 0):.2%} · "
           f"**trades today** {len(t_day)}", ""]
     import prices as px_src
     md += ["## Data quality", "", px_src.quality_line(), ""]
@@ -161,6 +175,10 @@ def daily_report(day: str | None = None) -> str:
         md.append("")
 
     md += ["## Committee minutes", ""]
+    try:      # Oct 23: quiet live tracker, no new heading
+        md += [f"_{tracker.line(tracker.from_db(db, _close_panel(day)))}_", ""]
+    except Exception:  # noqa: BLE001  a diary line must never break the report
+        pass
     for r in r_day.itertuples() if not r_day.empty else []:
         md.append(f"**Run #{r.id}** ({db.madrid_et(r.started_at)}, {r.mode}, {r.status}): {r.summary or '—'}")
         for m in db.get_messages(r.id):
@@ -257,7 +275,7 @@ def daily_report(day: str | None = None) -> str:
             md.append("Selection by driving agent: " + ", ".join(f"{a} {v:+.2%}" for a, v in att["by_agent"].items()))
             md.append("")
 
-    h = _holdings_table(_last_prices(day), nav)
+    h = _holdings_table(mk.px, nav)
     md += ["## Holdings", ""]
     if h.empty:
         md += ["All cash.", ""]
@@ -284,7 +302,7 @@ def final_summary(path: str | None = None) -> str:
     path = path or os.path.join(REPORT_DIR, "final_summary.docx")
     snaps = db.get_snapshots()
     trades = db.get_trades().sort_values("id") if not db.get_trades().empty else db.get_trades()
-    k = _kpis(snaps)
+    k = _kpis(snaps, _marks(db.today()))
     doc = Document()
     doc.styles["Normal"].font.size = Pt(10)
     doc.add_heading(f"{config.FUND_NAME} — competition summary", 0)

@@ -70,11 +70,11 @@ def test_weights_from_table_rules():
     t = _table(**{k: (60, 0.2, 0.0) for k in hist})
     w, _ = En.weights_from_table(t, hist)
     assert sum(w.values()) == 0
-    # snapshot-only signal (no history) keeps the equal prior 1/N; "zero" policy removes it
+    # snapshot-only signal (no history): Oct 23 prior = 0.5 x 1/N capped at 5% (here 0.5/7 = 7.1% -> 5%); "zero" policy removes it
     hist2 = {**hist, "snap": False}
     t = _table(a=(60, 3.0, 0.04), b=(60, 2.5, 0.03), c=(60, 1.5, 0.01), d=(60, 0.5, 0.02), e=(60, -2.0, 0.0), f=(60, 0.0, 0.0), snap=(0, None, 0.0))
     w, _ = En.weights_from_table(t, hist2)
-    assert abs(w["snap"] - 1 / 7) < 1e-3
+    assert abs(w["snap"] - min(CFG["snapshot_prior"] / 7, CFG["snapshot_cap"])) < 1e-3 and abs(w["snap"] - 0.05) < 1e-3
     w, _ = En.weights_from_table(t, hist2, {"unvalidated": "zero"})
     assert w["snap"] == 0
 

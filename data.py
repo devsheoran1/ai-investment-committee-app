@@ -147,23 +147,25 @@ def get_universe() -> pd.DataFrame:
 
 
 _NAMES: dict = {}
+_NAMES_LOADED = [False]
 
 
 def names_map() -> dict[str, str]:
     """ticker -> company/ETF name (IPS E7), from data/universe_sp500.csv + config.ETF_NAMES."""
-    if not _NAMES:
+    if not _NAMES_LOADED[0]:                 # retry until the stock names are loaded (a failed first read stayed empty)
         try:
             u = pd.read_csv(config.UNIVERSE_CSV)
-            _NAMES.update(dict(zip(u["symbol"], u["name"])))
+            _NAMES.update({s: n for s, n in zip(u["symbol"], u["name"]) if isinstance(n, str) and n})
+            _NAMES_LOADED[0] = True
         except (OSError, KeyError, ValueError):
             pass
         _NAMES.update(config.ETF_NAMES)
     return _NAMES
 
 
-def label(ticker: str) -> str:
-    """'PSX · Phillips 66' (IPS E7)."""
-    n = names_map().get(ticker)
+def label(ticker: str, fallback: str | None = None) -> str:
+    """'PSX · Phillips 66' (IPS E7). `fallback` = the name stored with the trade, if the universe has none."""
+    n = names_map().get(ticker) or fallback
     return f"{ticker} · {n}" if n else ticker
 
 
@@ -204,6 +206,15 @@ def _synthetic_prices(tickers: list[str], days: int = 504, seed: int = 7) -> pd.
     return pd.DataFrame(100 * np.exp(np.cumsum(rets, axis=0)), index=idx, columns=tickers)
 
 
+REFRESH_MIN = 5          # re-download at most every 5 min while the latest official close is missing
+
+
+def close_missing(close: pd.DataFrame) -> bool:
+    """True when the last completed NYSE session's close is not in the panel yet."""
+    import nyse_calendar
+    return bool(len(close)) and close.index[-1].date() < nyse_calendar.last_completed_session()
+
+
 def get_market_data(tickers: list[str] | None = None) -> dict[str, pd.DataFrame]:
     """{'close','open','volume'} DataFrames (dates x tickers). Real data if at all
     possible: fresh download (<60 min old) -> last good download -> synthetic."""
@@ -214,6 +225,11 @@ def get_market_data(tickers: list[str] | None = None) -> dict[str, pd.DataFrame]
     name = _key("market", tickers)
     try:
         md = _cached(name, lambda: _download(tickers, config.PRICE_HISTORY), max_age_min=60)
+        if close_missing(md["close"]):       # Oct 23: latest NYSE close not in the data yet -> re-download (throttled)
+            try:
+                md = _cached(name, lambda: _download(tickers, config.PRICE_HISTORY), max_age_min=REFRESH_MIN)
+            except Exception:  # noqa: BLE001  keep what we have
+                pass
         DATA_SOURCE.update(prices=f"yfinance ({len(md['close'].columns)}/{len(tickers)} tickers)", synthetic=False)
     except Exception as e:  # noqa: BLE001
         stale = _latest_cached_real(name)

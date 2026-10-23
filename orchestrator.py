@@ -245,7 +245,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
     except Exception as e:  # noqa: BLE001
         emit("model", f"Ensemble skipped ({str(e)[:100]})")
     pol_buys = {}
-    if not replay and not synthetic and ensemble is not None:      # buys by well-known US politicians -> Sentiment context only
+    if config.POLITICIAN_SIGNAL and not replay and not synthetic and ensemble is not None:      # (off) buys by well-known US politicians -> Sentiment context only
         try:
             from strategies.politicians import get_politician_buys
             pol_buys = get_politician_buys([t for t in shortlist if asset_types.get(t) == "stock"])
@@ -823,7 +823,7 @@ def record_prior_close(close, emit=print, polygon=None) -> str | None:
 
 
 def snapshot_only() -> float:
-    """Intraday mark (21:45 Madrid = 15:45 ET, NOT the close): revalue and log, no agents. The official close is
+    """Intraday mark (15:45 ET = 21:45 Madrid, or 20:45 in the one-week US/EU DST gap; NOT the close): revalue and log, no agents. The official close is
     booked by record_prior_close() at the start of the next committee run."""
     universe = data.get_universe()
     pos = db.get_positions()

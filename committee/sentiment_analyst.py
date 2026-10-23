@@ -52,11 +52,6 @@ If a ticker's headlines are all noise, score it 0 and say "noise only". Tickers 
         earn = {t: e for t, e in (ctx.get("earnings") or {}).items() if t in rows and e}
         if earn:
             txt += f"\n\nEARNINGS CONTEXT (B7):\n{compact(earn)}"
-        pol = {t: {"buyers": p["buyers"][:3], "n_buys": p["n_buys"], "last": p["last"]}
-               for t, p in (ctx.get("politician_buys") or {}).items() if t in ctx["tickers"]}
-        if pol:     # alternative-data context only: STOCK Act filings arrive up to 45 days late, so never a score driver alone
-            txt += (f"\n\nCONGRESS BUYS (well-known US politicians, last 45 days, filed late; weak context, not news):"
-                    f"\n{compact(pol)}")
         return txt
 
     def mock(self, ctx):

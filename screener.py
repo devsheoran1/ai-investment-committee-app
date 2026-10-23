@@ -4,9 +4,11 @@ Screening funnel (IPS Part B, two stages as decided Oct 20). Pure Python, no LLM
     Hard filters   price, 20d dollar volume, 1y history, 3m vol (stocks)                       (B3-B8)
     Stage 1        all ~500 stocks, price only, z-scored WITHIN SECTOR (B10):
                    12-1m momentum / 12m vol 39% · industry momentum (1m, GICS sub-industry peers) 24% ·
-                   trend (price vs 50dma and 200dma) 25% · 1-week reversal 12%                -> top 60
+                   trend (price vs 50dma and 200dma) 25% · 1-week reversal 12%                -> 60
+                   (sector quota: top 5 per GICS sector + the 5 best overall, topped up by score if short)
     Stage 2        those 60: Stage-1 score 57% · earnings revisions + post-earnings drift 27% ·
-                   quality (ROE, net margin, D/E vs sector) 16%                               -> top 30
+                   quality (ROE, net margin, D/E vs sector) 16%                               -> 30
+                   (sector quota: 1-5 per sector, the rest by score)
                    A missing Stage-2 input reweights pro rata, never counts as 0.
     Shortlist      top 30 + current holdings + eligible leveraged ETFs (+ inverse in risk-off)   (B11)
 
@@ -66,6 +68,31 @@ def _blend(df: pd.DataFrame, weights: dict[str, float], by_sector: pd.Series | N
     return (num / den.replace(0, np.nan)).fillna(-9)
 
 
+def quota_pick(score: pd.Series, sector: pd.Series, keep: int, floor: int = 0, cap: int = 0, overall: int = 0) -> list[str]:
+    """Sector-quota selection (Oct 23), returned in score order.
+    1. every sector present gets its best `floor` names (no sector disappears from the funnel);
+    2. the `overall` best of the rest, any sector;
+    3. fill to `keep` by score, no sector above `cap` (0 = no cap); if the cap leaves it short (sparse sectors) the
+       cap is dropped for the last places."""
+    s = score.sort_values(ascending=False)
+    sec = sector.reindex(s.index)
+    picked: list[str] = []
+    for _, names in s.groupby(sec, sort=False):
+        picked += names.index[:floor].tolist()
+    picked = [t for t in s.index if t in set(picked)][:keep]                 # floor alone over `keep`: best by score
+    picked += [t for t in s.index if t not in picked][:max(0, min(overall, keep - len(picked)))]   # extras never push out the floor
+    for respect_cap in (True, False):
+        counts = dict(sec.reindex(picked).value_counts())
+        for t in s.index:
+            if len(picked) >= keep:
+                break
+            if t in picked or (respect_cap and cap and counts.get(sec[t], 0) >= cap):
+                continue
+            picked.append(t)
+            counts[sec[t]] = counts.get(sec[t], 0) + 1
+    return [t for t in s.index if t in set(picked)]
+
+
 def industry_momentum(f: pd.DataFrame, meta: pd.DataFrame) -> pd.Series:
     """1m return of the stock's GICS sub-industry peers (equal weight, excluding itself); sector peers if < 2."""
     out = {}
@@ -112,7 +139,9 @@ def screen(universe: pd.DataFrame, market: dict, holdings: list[str] | None = No
     stocks["stage1_score"] = _blend(stocks, config.SCREEN_STAGE1["weights"], sec).round(3)
     stocks = stocks.sort_values("stage1_score", ascending=False)
     stocks["stage1_rank"] = np.arange(1, len(stocks) + 1)
-    top60 = stocks.index[:config.SCREEN_STAGE1["keep"]].tolist()
+    q1 = config.SCREEN_STAGE1
+    top60 = quota_pick(stocks["stage1_score"], stocks["sector"], q1["keep"], floor=q1["per_sector"],
+                       overall=q1["overall"]) if S["sector_neutral"] else stocks.index[:q1["keep"]].tolist()
 
     st2 = stocks.loc[top60].copy()
     inputs = {}
@@ -127,7 +156,10 @@ def screen(universe: pd.DataFrame, market: dict, holdings: list[str] | None = No
     st2["screen_score"] = _blend(st2, config.SCREEN_STAGE2["weights"], st2["sector"] if S["sector_neutral"] else None).round(3)
     st2 = st2.sort_values("screen_score", ascending=False)
     st2["screen_rank"] = np.arange(1, len(st2) + 1)
-    top = st2.index[:config.SCREEN_STAGE2["keep"]].tolist()
+    q2 = config.SCREEN_STAGE2
+    top = quota_pick(st2["screen_score"], st2["sector"], q2["keep"], floor=q2["min_per_sector"], cap=q2["max_per_sector"]) \
+        if S["sector_neutral"] else st2.index[:q2["keep"]].tolist()
+    top = [t for t in st2.index if t in set(top)]
 
     lev = f.index[f["asset_type"] == "leveraged_etf"].tolist()
     inv = f.index[f["asset_type"] == "inverse_etf"].tolist()

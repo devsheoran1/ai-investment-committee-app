@@ -56,3 +56,23 @@ def is_open(when: dt.datetime) -> bool:
     """True while the NYSE regular session (09:30 ET to the official close) is running."""
     n = when.astimezone(ET)
     return is_trading_day(n.date()) and dt.datetime.combine(n.date(), dt.time(9, 30), tzinfo=ET) <= n < close_dt(n.date())
+
+
+# Oct 23: pre-open / after-close labels come from the NY clock, never from a fixed Madrid hour. The US and the EU change
+# clocks on different Sundays (EU Oct 25, US Nov 1 in 2026), so the Madrid hour of the open/close shifts for a week.
+MADRID = ZoneInfo("Europe/Madrid")
+MARK_BEFORE_CLOSE = dt.timedelta(minutes=15)      # the intraday mark is taken 15 min before the official close
+
+
+def session_times(day, tz: ZoneInfo = MADRID) -> dict[str, dt.datetime]:
+    """{'open', 'close', 'mark'} of the NYSE session `day`, as aware datetimes in `tz` (default Madrid)."""
+    o = dt.datetime.combine(_d(day), dt.time(9, 30), tzinfo=ET)
+    c = close_dt(day)
+    return {"open": o.astimezone(tz), "close": c.astimezone(tz), "mark": (c - MARK_BEFORE_CLOSE).astimezone(tz)}
+
+
+def session_labels(day) -> dict[str, str]:
+    """Madrid-time labels for the session: {'pre_open': '14:30', 'close': '21:00', 'mark': '20:45', 'mark_et': '15:45'}."""
+    t = session_times(day)
+    return {"pre_open": f"{t['open']:%H:%M}", "close": f"{t['close']:%H:%M}", "mark": f"{t['mark']:%H:%M}",
+            "mark_et": f"{(close_dt(day) - MARK_BEFORE_CLOSE):%H:%M}"}

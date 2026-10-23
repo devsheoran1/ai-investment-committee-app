@@ -87,21 +87,11 @@ def test_politician_source_failure_is_empty_and_synthetic_days_skip_it():
         data._cached, politicians._download, data.is_synthetic = orig, orig_dl, orig_syn
 
 
-def test_sentiment_prompt_is_identical_without_politician_data_and_adds_one_block_with_it():
+def test_sentiment_prompt_ignores_politician_data_oct23():
+    """Oct 23: the politician signal is off (no key, 45-day lag). Even if ctx carries buys, Sentiment never sees them."""
     ctx = {"tickers": ["NVDA", "AAPL"], "news": {"NVDA": [{"title": "NVDA beats", "ts": "2026-10-22 09:00", "source": "Reuters", "finbert": 0.4}], "AAPL": []},
            "earnings": {}}
     s = SentimentAnalyst()
     base = s.build_prompt(ctx)
-    assert "CONGRESS" not in base
-    assert s.build_prompt({**ctx, "politician_buys": {}}) == base
-    with_pol = s.build_prompt({**ctx, "politician_buys": {"NVDA": {"buyers": ["Nancy Pelosi"], "n_buys": 2, "last": "2026-10-13", "amounts": []},
-                                                         "XYZ": {"buyers": ["x"], "n_buys": 1, "last": "2026-10-13", "amounts": []}}})
-    assert with_pol.startswith(base) and "CONGRESS BUYS" in with_pol and "Pelosi" in with_pol and "XYZ" not in with_pol
-    assert "weak context" in with_pol                                              # framed as late, weak, not news
-    assert config.POLITICIAN_WATCHLIST and "Pelosi" in config.POLITICIAN_WATCHLIST
-
-
-if __name__ == "__main__":
-    for name, fn in list(globals().items()):
-        if name.startswith("test_"):
-            fn(); print("ok", name)
+    with_pol = s.build_prompt({**ctx, "politician_buys": {"NVDA": {"buyers": ["Nancy Pelosi"], "n_buys": 2, "last": "2026-10-13", "amounts": []}}})
+    assert with_pol == base and "CONGRESS" not in with_pol and "Pelosi" not in with_pol

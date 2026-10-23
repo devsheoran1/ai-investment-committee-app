@@ -66,6 +66,8 @@ Score -1..+1 (0 = no edge). Use the range: the PM needs to see who is strongest.
             models = sum(w[m] * model_z[m][t] for m in model_z) / wm if wm else 0.0
             raw = (1 - wm) * tech + wm * models
             e = (e_scores.get(t) or {}).get("score")
+            volpen = 1 + max(0.0, ((x.get("vol_3m_ann_pct") or 30) / 100) - 0.40) / 0.40
+            legacy = float(np.clip(raw / volpen, -1, 1))                  # pre-blend score, kept for the live tracker
             if e is not None:                                              # A2/A3: multi-strategy ensemble (strategies/)
                 raw = (1 - b_eff) * raw + b_eff * e
             if ens:
@@ -76,8 +78,9 @@ Score -1..+1 (0 = no edge). Use the range: the PM needs to see who is strongest.
                                      ("below_200dma", not above200)) if ok]
             out[t] = {"breakdown": {**b, "models": round(models, 2)}, "rule_score": round(float(np.clip(score, -1, 1)), 2),
                       "flags": flags}
+            out[t]["breakdown"]["legacy"] = round(legacy, 3)             # additive (live tracker): legacy-only score
             if e is not None:
-                out[t]["breakdown"]["ensemble"] = round(e, 2)
+                out[t]["breakdown"]["ensemble"] = round(e, 3)
         return out
 
     def build_prompt(self, ctx):

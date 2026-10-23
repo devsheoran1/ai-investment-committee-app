@@ -78,7 +78,8 @@ def learn_weights(d: Data, strategies: list[Strategy], panels: dict[str, pd.Data
     Every scoring strategy starts with an equal prior mass of 1/N. Strategies with a full 60-session IC record
     (validated) pool their mass and split it by shrunk IC (t < 1 -> 0; a validated pool with no positive evidence
     leaves its mass UNALLOCATED, so the ensemble earns less say in Quant, it is not re-given to weak signals).
-    Strategies without a full record (< 60 sessions, or snapshot-only data with no history) keep the equal prior."""
+    Strategies with < 60 sessions keep the equal prior; snapshot-only data with no history gets 0.5 x 1/N capped at 5%
+    (ENSEMBLE["snapshot_prior"/"snapshot_cap"]) until a measured 60-session IC replaces it."""
     cfg = {**config.ENSEMBLE, **(cfg or {})}
     fwd = forward_returns(d.close, cfg["ic_horizon"])
     table = {}
@@ -104,7 +105,8 @@ def weights_from_table(table: dict, has_history: dict[str, bool], cfg: dict | No
     prior = [k for k in names if not table[k]["validated"] and (has_history[k] or cfg["unvalidated"] == "equal")]
     w: dict[str, float] = {k: 0.0 for k in names}
     for k in prior:
-        w[k] = 1.0 / n
+        # snapshot-only signals (no history to measure) get half the equal prior, capped; price-based ones keep 1/N
+        w[k] = 1.0 / n if has_history[k] else min(cfg["snapshot_prior"] / n, cfg["snapshot_cap"])
     ic_pos = {k: table[k]["shrunk_ic"] for k in validated if (table[k]["t"] or 0) >= cfg["min_t"] and table[k]["shrunk_ic"] > 0}
     if ic_pos:
         tot = sum(ic_pos.values())

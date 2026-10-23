@@ -99,12 +99,14 @@ def inject() -> None:
 
 # One number style everywhere: $1,002,357 · +0.24% · at most 2 decimals
 def usd(x: float, signed: bool = False) -> str:
+    x = round(float(x))                       # a value that rounds to $0 carries no sign ("−$0")
     sign = ("+" if x >= 0 else "−") if signed else ("−" if x < 0 else "")
     return f"{sign}${abs(x):,.0f}"
 
 
 def pct(x: float, signed: bool = True, d: int = 2) -> str:
-    return f"{x:+.{d}%}" if signed else f"{x:.{d}%}"
+    import valuation
+    return valuation.pct(x, d, signed)
 
 
 def esc(x) -> str:

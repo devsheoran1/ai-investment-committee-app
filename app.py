@@ -22,7 +22,9 @@ import database as db
 import lab_summary
 import reflection
 import report
+import tracker
 import ui
+import valuation
 
 # Viewer mode (Streamlit Cloud): read-only, never imports the heavy model/LLM stack.
 VIEWER = os.getenv("VIEWER_MODE") == "1"
@@ -84,10 +86,12 @@ if REPLAY:
 db.init_db()
 
 positions = db.get_positions()
-weights, nav = db.current_weights(last_px)
-cash = db.get_cash()
 snaps = db.get_snapshots()
 trades = db.get_trades()
+marks = valuation.mark(positions, close, trades, snaps)          # never a close dated before the fill; same date as SPY
+last_px.update(marks.px)
+weights, nav = db.current_weights(last_px)
+cash = db.get_cash()
 runs = db.get_runs()
 halted = os.path.exists(os.path.join(config.BASE_DIR, "HALT"))
 
@@ -113,6 +117,9 @@ def last_message(agent: str, key: str | None = None):
 # --------------------------------------------------------------------------- #
 # Sidebar
 # --------------------------------------------------------------------------- #
+import nyse_calendar
+_lbl = nyse_calendar.session_labels(nyse_calendar.last_completed_session() if not nyse_calendar.is_trading_day(db.today())
+                                    else db.today())       # Madrid hours follow the NY clock (DST gaps differ US/EU)
 with st.sidebar:
     st.caption(f"{'REPLAY fund (read-only)' if REPLAY else 'Live fund'} · {db.current_db_name()}")
     st.markdown(f"**{db.today()}** · Madrid {db.now():%H:%M}")
@@ -131,7 +138,7 @@ with st.sidebar:
         st.info(f"Viewer: updated after each laptop run, last update {db.madrid_et(_last) if _last else 'n/a'}")
     if not REPLAY and not VIEWER:
         if st.button("📅 Intraday mark (not the close)", width="stretch",
-                     help="21:45 Madrid = 15:45 ET, before the US close. Reprices holdings, no agents, no trades. "
+                     help=f"{_lbl['mark']} Madrid = {_lbl['mark_et']} ET, before the US close. Reprices holdings, no agents, no trades. "
                           "The official close is booked automatically at the start of the next committee run."):
             load_market.clear()
             st.toast(f"Intraday mark saved · NAV ${snapshot_only():,.0f}")
@@ -166,27 +173,25 @@ if synthetic:
 
 # Oct 21: Data quality box. Held names with no price today are valued at the last verified close and can't trade.
 import prices as px_src
-_stale = {t: px_src.STALE for t in db.get_positions() if t not in last_px}
+_stale = {t: px_src.STALE for t in db.get_positions() if t not in last_px} | marks.stale
 px_src.QUALITY.update({**quality, "flags": {**quality.get("flags", {}), **_stale}})
 _quality_line = px_src.quality_line()   # shown in a collapsed expander at the bottom of the page
 
 ret = nav / config.STARTING_CAPITAL - 1
-spy_ret = None
-if len(snaps) and snaps["benchmark_px"].iloc[0]:
-    spy_ret = last_px.get(config.BENCHMARK, snaps["benchmark_px"].iloc[-1]) / snaps["benchmark_px"].iloc[0] - 1
+spy_ret = marks.spy_return                                      # inception SPY -> SPY at the same mark date as the fund
 prev = snaps[snaps["date"] < db.today()]["total_equity"] if len(snaps) else pd.Series(dtype=float)
 day_pnl = nav - (prev.iloc[-1] if len(prev) else config.STARTING_CAPITAL)
 eq = snaps["total_equity"] if len(snaps) else pd.Series([config.STARTING_CAPITAL])
 mdd = float((eq / eq.cummax().clip(lower=config.STARTING_CAPITAL) - 1).min()) if len(eq) else 0.0
 cash_pct = cash / nav if nav else 1.0
 k = st.columns(4) + st.columns(4)
-ui.kpi(k[0], "Portfolio value", ui.usd(nav), f"{ui.usd(nav - config.STARTING_CAPITAL, True)} since inception", ui.tone(nav - config.STARTING_CAPITAL))
+ui.kpi(k[0], "Portfolio value", ui.usd(nav), f"{ui.usd(nav - config.STARTING_CAPITAL, True)} since inception", ui.tone(round(nav - config.STARTING_CAPITAL)))
 ui.kpi(k[1], "Cash available", ui.usd(cash), f"{cash_pct:.1%} of NAV · limit {config.RISK_LIMITS['max_cash_weight']:.0%}",
        "neg" if positions and cash_pct > config.RISK_LIMITS["max_cash_weight"] else "")
-alpha = None if spy_ret is None else (ret - spy_ret) * 1e4
-ui.kpi(k[2], "Return vs SPY", f"{ret:+.2%}", f"SPY {spy_ret:+.2%} · alpha {alpha:+.0f} bps" if alpha is not None else "no snapshot yet", ui.tone(ret))
-ui.kpi(k[3], "Today's P&L", ui.usd(day_pnl, True), f"{day_pnl / nav:+.2%}" if nav else "", ui.tone(day_pnl))
-ui.kpi(k[4], "Max drawdown", f"{mdd:.2%}", "C11: -7% warn · -10% hard", "neg" if mdd <= config.DD_WARN else "")
+alpha = None if spy_ret is None else int(round((ret - spy_ret) * 1e4))
+ui.kpi(k[2], "Return vs SPY", ui.pct(ret), f"SPY {ui.pct(spy_ret)} · alpha {alpha:+d} bps" if alpha is not None else "no snapshot yet", ui.tone(round(ret, 4)))
+ui.kpi(k[3], "Today's P&L", ui.usd(day_pnl, True), ui.pct(day_pnl / nav) if nav else "", ui.tone(round(day_pnl)))
+ui.kpi(k[4], "Max drawdown", ui.pct(mdd, signed=False), "C11: -7% warn · -10% hard", "neg" if mdd <= config.DD_WARN else "")
 ui.kpi(k[5], "Trades today", f"{n_today}/{config.MAX_TRADES_PER_DAY}" if n_today <= config.MAX_TRADES_PER_DAY else f"{n_today} (init)",
        f"{len(trades)} trades in total")
 k[6].markdown(f'<div class="kpi"><div class="lbl">Regime (C1.3)</div><div style="margin-top:10px">{ui.regime_badge(latest_regime())}</div>'
@@ -195,6 +200,8 @@ last_upd = runs.iloc[0]["started_at"] if not runs.empty else None
 ui.kpi(k[7], "Last update", db.madrid_et(last_upd)[5:16].replace("-", "/", 1) if last_upd else "—",
        "Madrid time" if last_upd else "no run yet")
 
+if marks.stale:
+    st.caption(f"Stale mark: {', '.join(sorted(marks.stale))} valued at the fill price (no close on or after the fill session yet).")
 st.write("")
 pos_df = pd.DataFrame()
 if not positions:
@@ -210,15 +217,17 @@ else:
         mc = (fund.get(t) or {}).get("mkt_cap_bn")
         return "–" if mc is None else "Mega" if mc > 200 else "Large" if mc > 10 else "Mid" if mc > 2 else "Small"
     rows = []
+    trade_name = ({s: n for s, n in zip(trades["symbol"], trades["name"]) if isinstance(n, str) and n}
+                  if len(trades) and "name" in trades.columns else {})
     for t, p in positions.items():
         px = last_px.get(t, p["avg_cost"])
         mv = p["shares"] * px
         inv = db.latest_buy_reflection(t) or {}
         spark = close[t].dropna().tail(20).round(2).tolist() if t in close.columns else []
-        rows.append({"Name": data.label(t), "Sector": sector_of.get(t, "?"), "Cap": cap_bucket(t), "Shares": p["shares"],
+        rows.append({"Name": data.label(t, trade_name.get(t)), "Sector": sector_of.get(t, "?"), "Cap": cap_bucket(t), "Shares": p["shares"],
                      "Weight": 100 * mv / nav, "Cost": p["avg_cost"], "Total cost": p["shares"] * p["avg_cost"],
-                     "Market value": mv, "Price": px, "P&L $": p["shares"] * (px - p["avg_cost"]),
-                     "P&L %": 100 * (px / p["avg_cost"] - 1), "20 days": spark, "Exit below": inv.get("invalidation_px")})
+                     "Market value": mv, "Price": px, "P&L $": round(p["shares"] * (px - p["avg_cost"])) + 0.0,
+                     "P&L %": round(100 * (px / p["avg_cost"] - 1), 1) + 0.0, "20 days": spark, "Exit below": inv.get("invalidation_px")})
     pos_df = pd.DataFrame(rows).sort_values("Weight", ascending=False)
     st.dataframe(pos_df, hide_index=True, width="stretch", height=min(42 + 35 * len(pos_df), 420), column_config={
         "Weight": st.column_config.ProgressColumn("Weight", format="%.1f%%", min_value=0, max_value=20),
@@ -460,8 +469,11 @@ with tab_room:
                     if c.get("lstm"):
                         st.json(c["lstm"], expanded=False)
             with st.expander(f"What {m['agent']} saw · raw output"):
+                trk = f"_{tracker.line(tracker.from_db(db, close))}_\n\n" if m["agent"] == "Quant Analyst" else ""
+                if trk and not m.get("system_prompt"):
+                    st.caption(trk.strip("_\n"))
                 if m.get("system_prompt"):
-                    st.markdown("**System prompt**")
+                    st.markdown(trk + "**System prompt**")      # tracker rides in the existing element: UI tree unchanged
                     st.code(m["system_prompt"][:6000], language=None)
                     st.markdown("**User prompt**")
                     st.code((m.get("user_prompt") or "")[:12000], language=None)
@@ -578,7 +590,7 @@ with tab_perf:
     sess = snaps.drop_duplicates("date", keep="last") if len(snaps) else snaps   # one point per NYSE session
     if len(sess) < 2:
         ui.empty("Performance builds up day by day", "NAV vs SPY, drawdown, attribution and the committee's hit rate appear "
-                 "after the second daily snapshot (after-close snapshot at 21:45 Madrid).")
+                 f"after the second daily snapshot (after-close snapshot at {_lbl['mark']} Madrid).")
     else:
         s = sess.copy()
         s["date"] = pd.to_datetime(s["date"])
