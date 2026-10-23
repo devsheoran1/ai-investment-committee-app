@@ -22,6 +22,11 @@ Score -1..+1 (0 = no edge). Use the range: the PM needs to see who is strongest.
   "note": "max 40 words on how much you relied on the LSTM and why"
 }"""
 
+    # How to read the model scoreboard (same wording as lab_summary.py, the Model Lab and the daily report):
+    #   hit = how often a model called the 5-day direction right on unseen data; always-up = the lazy "stocks usually go
+    #   up" guess, which a model must beat; IC = does it rank future winners above losers (0 none, +0.05 slight, +0.10 good);
+    #   t = IC divided by its noise, below 1 it could be luck. C3.4: a model gets weight only if it beats always-up, clears
+    #   52% (25% weight; above 55% = 50%) and has t >= 1; otherwise Quant uses price signals only.
     # ---- Python-computed signals (C3.2): the LLM reads them, never computes them ---------------------- #
     SUB_WEIGHTS = {"momentum_12_1": 0.40, "trend": 0.30, "macd": 0.10, "rsi": 0.20}
     ZERO_SHARE = 0.30                                                    # C3.7: > 30% exact 0.0 = lazy reply

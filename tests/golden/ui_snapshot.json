@@ -188,6 +188,19 @@
   },
   {
    "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "How to read this"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
    "t": "Expander",
    "label": "Model card \u00b7 horse race scoreboard + LSTM"
   },
@@ -629,6 +642,10 @@
   },
   {
    "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
    "t": "Dataframe",
    "columns": [
     "n",
@@ -645,6 +662,15 @@
   {
    "d": 2,
    "t": "Caption"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "How to read this"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
   },
   {
    "d": 1,
@@ -772,6 +798,7 @@
   "What Morning Brief saw \u00b7 raw output",
   "What Screener saw \u00b7 raw output",
   "What Regime Engine saw \u00b7 raw output",
+  "How to read this",
   "Model card \u00b7 horse race scoreboard + LSTM",
   "What Model Lab saw \u00b7 raw output",
   "What Macro Strategist saw \u00b7 raw output",
@@ -784,6 +811,7 @@
   "What Risk Manager saw \u00b7 raw output",
   "What CIO saw \u00b7 raw output",
   "What Trader saw \u00b7 raw output",
+  "How to read this",
   "2026-10-23 00:46 Madrid (18:46 ET) \u00b7 mock",
   "Data quality",
   "Start new simulation"
@@ -807,6 +835,7 @@
   "What Morning Brief saw \u00b7 raw output",
   "What Screener saw \u00b7 raw output",
   "What Regime Engine saw \u00b7 raw output",
+  "How to read this",
   "Model card \u00b7 horse race scoreboard + LSTM",
   "What Model Lab saw \u00b7 raw output",
   "What Macro Strategist saw \u00b7 raw output",
@@ -819,6 +848,7 @@
   "What Risk Manager saw \u00b7 raw output",
   "What CIO saw \u00b7 raw output",
   "What Trader saw \u00b7 raw output",
+  "How to read this",
   "2026-10-23 00:46 Madrid (18:46 ET) \u00b7 mock",
   "Data quality",
   "Start new simulation"
@@ -1047,6 +1077,10 @@
   },
   {
    "d": 2,
+   "t": "Markdown"
+  },
+  {
+   "d": 2,
    "t": "Dataframe",
    "columns": [
     "n",
@@ -1063,6 +1097,15 @@
   {
    "d": 2,
    "t": "Caption"
+  },
+  {
+   "d": 2,
+   "t": "Expander",
+   "label": "How to read this"
+  },
+  {
+   "d": 3,
+   "t": "Markdown"
   },
   {
    "d": 1,

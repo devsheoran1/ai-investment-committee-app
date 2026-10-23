@@ -18,6 +18,7 @@ import pandas as pd
 import config
 import data
 import database as db
+import lab_summary
 
 REPORT_DIR = os.getenv("FUND_REPORT_DIR", os.path.join(config.BASE_DIR, "reports"))
 
@@ -170,6 +171,8 @@ def daily_report(day: str | None = None) -> str:
                 last_risk = c
             elif m["agent"] == "System" and "scoreboard" in c:
                 md.append("- Model horse race (same out-of-sample origins; weights per IPS C3.4):")
+                md.append("")
+                md.append(f"  In plain English: {lab_summary.plain_summary(c)}")
                 md.append("")
                 md.append("  | model | hit rate | rank IC | IC t-stat | trust hit (walk-forward) | always-up | weight |")
                 md.append("  |---|---|---|---|---|---|---|")
@@ -341,6 +344,7 @@ def final_summary(path: str | None = None) -> str:
     doc.add_heading("Model horse race (latest)", 1)
     hr = _latest_horse_race()
     if hr:
+        doc.add_paragraph(lab_summary.plain_summary(hr))
         doc.add_paragraph(hr.get("scoreboard_line", ""))
     doc.add_paragraph("Short-horizon returns are close to unpredictable: a model only gets weight if it beats the "
                       "always-up baseline, clears 52% and has an IC t-stat of at least 1 (IPS C3.4).")

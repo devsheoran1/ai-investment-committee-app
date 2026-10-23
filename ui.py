@@ -13,6 +13,7 @@ import streamlit as st
 NAVY, PANEL, PANEL2, LINE = "#1B3354", "#234068", "#2B4C78", "#3A5F8E"   # Oct 21: lightened
 ACCENT, BLUE2, BLUE3, BLUE4 = "#6BA3EC", "#8BB9F2", "#A9CBF6", "#CFE1FA"
 TEXT, MUTED = "#F2F6FC", "#AFC2DB"
+GRID = "rgba(175,194,219,0.12)"          # muted gridlines
 GREEN, RED, AMBER = "#22C55E", "#EF4444", "#F59E0B"
 SERIES = [ACCENT, BLUE3, BLUE2, BLUE4, "#1D4ED8", "#2563EB", "#7DD3FC", "#A5B4FC"]
 
@@ -61,6 +62,21 @@ h1, h2, h3, h4 {{ font-family: 'Inter', sans-serif; color: {TEXT}; letter-spacin
 .empty {{ background: {PANEL}; border: 1px dashed {LINE}; border-radius: 12px; padding: 28px; text-align: center; color: {MUTED}; }}
 .empty b {{ color: {TEXT}; }}
 div[data-testid="stTabs"] button p {{ font-size: 0.95rem; font-weight: 600; }}
+html, body, .stApp {{ font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }}
+[data-testid="stDataFrame"], [data-testid="stMetricValue"], .kpi .val, .nums, .cell .v {{ font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1, "cv11" 1; }}
+.kpi {{ border-radius: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.18), 0 6px 18px -8px rgba(0,0,0,.35); }}
+.kpi .val {{ font-family: 'Inter', sans-serif; font-weight: 600; letter-spacing: -0.02em; font-size: 1.6rem; }}
+.card, .empty {{ border-radius: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.14); }}
+/* chart cards: soft 1px border, 14px corners, subtle shadow, even padding and breathing room */
+[class*="st-key-card_"] {{ background: {PANEL}; border: 1px solid {LINE}66; border-radius: 14px; padding: 14px 16px 8px 16px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.18), 0 8px 24px -12px rgba(0,0,0,.45); margin-bottom: 18px; position: relative; }}
+[class*="st-key-card_"] [data-testid="stPopover"] {{ position: absolute; top: 10px; right: 12px; z-index: 5; width: auto; }}
+[class*="st-key-card_"] [data-testid="stPopover"] button {{ border: none; background: transparent; color: {MUTED}; min-height: 1.8rem;
+  padding: 0 .5rem; font-size: 1.15rem; line-height: 1; }}
+[class*="st-key-card_"] [data-testid="stPopover"] button:hover {{ background: {PANEL2}; color: {TEXT}; }}
+[class*="st-key-card_"] [data-testid="stPopoverButton"] [aria-hidden="true"] {{ display: none; }}
+[class*="st-key-card_"] [data-testid="stPopoverButton"] p {{ font-size: 1.25rem; margin: 0; }}
+div[data-testid="stExpander"] {{ border-radius: 12px; border-color: {LINE}88; }}
 div[data-testid="stMetric"] {{ background: {PANEL}; border: 1px solid {LINE}; border-radius: 10px; padding: 10px 12px; }}
 </style>
 """
@@ -71,12 +87,24 @@ def inject() -> None:
     tpl = go.layout.Template()
     tpl.layout = go.Layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", colorway=SERIES,
                            font=dict(family="Inter, sans-serif", color=TEXT, size=12),
-                           xaxis=dict(gridcolor=LINE, zerolinecolor=LINE, linecolor=LINE),
-                           yaxis=dict(gridcolor=LINE, zerolinecolor=LINE, linecolor=LINE),
-                           legend=dict(orientation="h", y=1.08, bgcolor="rgba(0,0,0,0)"),
-                           margin=dict(l=10, r=10, t=36, b=10), hoverlabel=dict(bgcolor=PANEL2, font_color=TEXT))
+                           xaxis=dict(gridcolor=GRID, zerolinecolor=GRID, showline=False, ticks="", tickfont=dict(color=MUTED, size=11)),
+                           yaxis=dict(gridcolor=GRID, zerolinecolor=GRID, showline=False, ticks="", tickfont=dict(color=MUTED, size=11)),
+                           title=dict(font=dict(size=14, color=TEXT), x=0.0, xanchor="left"),
+                           legend=dict(orientation="h", y=1.17, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)", borderwidth=0,
+                                       font=dict(size=11, color=MUTED)),
+                           margin=dict(l=10, r=10, t=44, b=10), hoverlabel=dict(bgcolor=PANEL2, font_color=TEXT, bordercolor=LINE))
     pio.templates["fund"] = tpl
     pio.templates.default = "fund"
+
+
+# One number style everywhere: $1,002,357 · +0.24% · at most 2 decimals
+def usd(x: float, signed: bool = False) -> str:
+    sign = ("+" if x >= 0 else "−") if signed else ("−" if x < 0 else "")
+    return f"{sign}${abs(x):,.0f}"
+
+
+def pct(x: float, signed: bool = True, d: int = 2) -> str:
+    return f"{x:+.{d}%}" if signed else f"{x:.{d}%}"
 
 
 def esc(x) -> str:
@@ -136,3 +164,78 @@ def timeline(steps: list[str], done: int) -> str:
 
 def empty(title: str, body: str) -> None:
     st.markdown(f'<div class="empty"><b>{esc(title)}</b><br>{esc(body)}</div>', unsafe_allow_html=True)
+
+
+# --------------------------------------------------------------------------- #
+# Chart cards: toolbar hidden, a "⋮" menu (download PNG / CSV / full screen) top-right of each card
+# --------------------------------------------------------------------------- #
+_PLOT_CONFIG = {"displayModeBar": False, "displaylogo": False}
+_n = {"i": 0}
+
+
+def _title(fig) -> str:
+    t = getattr(fig.layout.title, "text", None) or "chart"
+    import re
+    return re.sub(r"[^a-z0-9]+", "_", str(t).lower()).strip("_")[:48] or "chart"
+
+
+def fig_to_df(fig):
+    """The numbers behind a figure as one tidy table (trace, x, y / label, value / z) for the CSV download."""
+    import pandas as pd
+    frames = []
+    for i, tr in enumerate(fig.data):
+        nm = getattr(tr, "name", None) or f"trace{i + 1}"
+        d = {}
+        for k in ("x", "y", "labels", "values", "parents", "text"):
+            v = getattr(tr, k, None)
+            if v is not None and not isinstance(v, str):
+                try:
+                    d[k] = list(v)
+                except TypeError:
+                    pass
+        z = getattr(tr, "z", None)
+        if z is not None:
+            try:
+                zz = pd.DataFrame(z, index=getattr(tr, "y", None), columns=getattr(tr, "x", None))
+                frames.append(zz.reset_index().assign(trace=nm))
+                continue
+            except Exception:  # noqa: BLE001
+                pass
+        if not d and getattr(tr, "value", None) is not None:
+            d = {"value": [tr.value]}
+        if d:
+            n = max(len(v) for v in d.values())
+            frames.append(pd.DataFrame({k: v + [None] * (n - len(v)) for k, v in d.items()}).assign(trace=nm))
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _png(fig) -> bytes:
+    try:
+        return fig.to_image(format="png", width=1200, height=int(fig.layout.height or 420), scale=2)
+    except Exception:  # noqa: BLE001  kaleido/Chrome missing: say so instead of failing the page
+        return b""
+
+
+def chart(host, fig, name: str | None = None) -> None:
+    """Draw `fig` inside a styled card on `host` (a column or st). Same figure, same numbers; only the chrome changes."""
+    _n["i"] += 1
+    key = f"card_{_n['i']}"
+    fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")      # the card is the background
+    fig.update_xaxes(automargin=True)
+    fig.update_yaxes(automargin=True)
+    name = name or _title(fig)
+    with host.container(key=key):
+        with st.popover("⋮", help="Chart options"):
+            # callables: the PNG / CSV are only built when the button is clicked, not on every rerun
+            st.download_button("Download PNG", data=lambda: _png(fig), file_name=f"{name}.png", mime="image/png",
+                               key=f"png_{_n['i']}", width="stretch")
+            st.download_button("Download CSV", data=lambda: fig_to_df(fig).to_csv(index=False), file_name=f"{name}.csv",
+                               mime="text/csv", key=f"csv_{_n['i']}", width="stretch")
+            if st.button("Full screen", key=f"fs_{_n['i']}", width="stretch"):
+                _fullscreen(fig, name)
+        st.plotly_chart(fig, width="stretch", config=_PLOT_CONFIG, theme=None, key=f"plot_{_n['i']}")
+
+
+@st.dialog("Chart", width="large")
+def _fullscreen(fig, name: str) -> None:
+    st.plotly_chart(fig.update_layout(height=640), width="stretch", config=_PLOT_CONFIG, theme=None)

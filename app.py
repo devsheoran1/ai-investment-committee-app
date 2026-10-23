@@ -19,6 +19,7 @@ import analytics
 import config
 import data
 import database as db
+import lab_summary
 import reflection
 import report
 import ui
@@ -179,12 +180,12 @@ eq = snaps["total_equity"] if len(snaps) else pd.Series([config.STARTING_CAPITAL
 mdd = float((eq / eq.cummax().clip(lower=config.STARTING_CAPITAL) - 1).min()) if len(eq) else 0.0
 cash_pct = cash / nav if nav else 1.0
 k = st.columns(4) + st.columns(4)
-ui.kpi(k[0], "Portfolio value", f"${nav:,.0f}", f"{nav - config.STARTING_CAPITAL:+,.0f} since inception", ui.tone(nav - config.STARTING_CAPITAL))
-ui.kpi(k[1], "Cash available", f"${cash:,.0f}", f"{cash_pct:.1%} of NAV · limit {config.RISK_LIMITS['max_cash_weight']:.0%}",
+ui.kpi(k[0], "Portfolio value", ui.usd(nav), f"{ui.usd(nav - config.STARTING_CAPITAL, True)} since inception", ui.tone(nav - config.STARTING_CAPITAL))
+ui.kpi(k[1], "Cash available", ui.usd(cash), f"{cash_pct:.1%} of NAV · limit {config.RISK_LIMITS['max_cash_weight']:.0%}",
        "neg" if positions and cash_pct > config.RISK_LIMITS["max_cash_weight"] else "")
 alpha = None if spy_ret is None else (ret - spy_ret) * 1e4
 ui.kpi(k[2], "Return vs SPY", f"{ret:+.2%}", f"SPY {spy_ret:+.2%} · alpha {alpha:+.0f} bps" if alpha is not None else "no snapshot yet", ui.tone(ret))
-ui.kpi(k[3], "Today's P&L", f"{day_pnl:+,.0f}", f"{day_pnl / nav:+.2%}" if nav else "", ui.tone(day_pnl))
+ui.kpi(k[3], "Today's P&L", ui.usd(day_pnl, True), f"{day_pnl / nav:+.2%}" if nav else "", ui.tone(day_pnl))
 ui.kpi(k[4], "Max drawdown", f"{mdd:.2%}", "C11: -7% warn · -10% hard", "neg" if mdd <= config.DD_WARN else "")
 ui.kpi(k[5], "Trades today", f"{n_today}/{config.MAX_TRADES_PER_DAY}" if n_today <= config.MAX_TRADES_PER_DAY else f"{n_today} (init)",
        f"{len(trades)} trades in total")
@@ -450,6 +451,9 @@ with tab_room:
                 if len(conv):
                     st.caption("Top convictions: " + ", ".join(f"{t} {v:+.2f}" for t, v in conv.head(8).items()))
             if m["agent"] == "Model Lab":
+                st.markdown(f"**In plain English:** {lab_summary.plain_summary(c.get('race') or c)}")
+                with st.expander("How to read this"):
+                    st.markdown(lab_summary.HOW_TO_READ)
                 with st.expander("Model card · horse race scoreboard + LSTM"):
                     if (c.get("race") or {}).get("scoreboard_line"):
                         st.caption(c["race"]["scoreboard_line"])
@@ -500,25 +504,25 @@ with tab_pf:
                    "a pending proposal's post-trade risk is in the Decision Room, labelled PROPOSED.")
         a1, a2 = st.columns(2)
         caps = pos_df.groupby("Cap")["Weight"].sum().reindex(["Mega", "Large", "Mid", "Small", "ETF", "–"]).dropna()
-        a1.plotly_chart(go.Figure(go.Bar(x=caps.index, y=caps.values, text=[f"{v:.0f}%" for v in caps.values],
+        ui.chart(a1, go.Figure(go.Bar(x=caps.index, y=caps.values, text=[f"{v:.0f}%" for v in caps.values],
                                          textposition="outside", marker_color=ui.ACCENT)).update_layout(
-            title="Market-cap mix (% of NAV)", height=320, yaxis_ticksuffix="%"), width="stretch")
+            title="Market-cap mix (% of NAV)", height=320, yaxis_ticksuffix="%"))
         tm = pd.DataFrame({"t": w.index, "w": w.values, "s": [sector_of.get(t, "?") for t in w.index]})
         secs = list(tm["s"].unique())
-        a2.plotly_chart(go.Figure(go.Treemap(labels=secs + list(tm["t"]), parents=[""] * len(secs) + list(tm["s"]),
+        ui.chart(a2, go.Figure(go.Treemap(labels=secs + list(tm["t"]), parents=[""] * len(secs) + list(tm["s"]),
                                              ids=[f"s:{x}" for x in secs] + list(tm["t"]),
                                              values=[tm[tm["s"] == x]["w"].sum() for x in secs] + list(tm["w"]),
                                              branchvalues="total", texttemplate="%{label}<br>%{value:.1%}")
                                   ).update_traces(parents=[""] * len(secs) + [f"s:{x}" for x in tm["s"]]).update_layout(
-            title="Sector → position", height=320), width="stretch")
+            title="Sector → position", height=320))
         import attribution
         spy_w, asof = attribution.spy_sector_weights()
         sw = tm[tm["s"].isin(spy_w)].groupby("s")["w"].sum()
         act = pd.Series({x: sw.get(x, 0.0) - v for x, v in spy_w.items()}).sort_values()
         b1, b2 = st.columns(2)
-        b1.plotly_chart(go.Figure(go.Bar(x=act.values * 100, y=act.index, orientation="h",
+        ui.chart(b1, go.Figure(go.Bar(x=act.values * 100, y=act.index, orientation="h",
                                          marker_color=[ui.GREEN if v > 0 else ui.RED for v in act.values])).update_layout(
-            title=f"Active sector weights vs SPY (pp; SPY as of {asof})", height=360), width="stretch")
+            title=f"Active sector weights vs SPY (pp; SPY as of {asof})", height=360))
         held = [t for t in w.index if t in close.columns]
         rets = close[held + [config.BENCHMARK]].pct_change().dropna().tail(252)
         cov = rets[held].cov().values * 252
@@ -527,34 +531,34 @@ with tab_pf:
         rc = wv * (cov @ wv) / port_var if port_var > 0 else wv * 0
         betas = np.array([float(np.cov(rets[t], rets[config.BENCHMARK])[0, 1] / rets[config.BENCHMARK].var()) for t in held])
         rc_df = pd.DataFrame({"t": held, "weight": wv * 100, "risk": rc * 100, "beta_c": betas * wv})
-        b2.plotly_chart(go.Figure([go.Bar(name="weight %", x=rc_df["t"], y=rc_df["weight"], marker_color=ui.BLUE3),
+        ui.chart(b2, go.Figure([go.Bar(name="weight %", x=rc_df["t"], y=rc_df["weight"], marker_color=ui.BLUE3),
                                    go.Bar(name="risk contribution %", x=rc_df["t"], y=rc_df["risk"], marker_color=ui.ACCENT)]
                                   ).update_layout(title=f"Current · risk contribution vs weight (vol {np.sqrt(port_var):.1%})",
-                                                  height=360, barmode="group"), width="stretch")
+                                                  height=360, barmode="group"))
         c1_, c2_ = st.columns(2)
-        c1_.plotly_chart(go.Figure(go.Bar(x=rc_df["t"], y=rc_df["beta_c"], marker_color=ui.BLUE2)).update_layout(
-            title=f"Current · beta contribution (book beta {rc_df['beta_c'].sum():.2f}, 1y daily vs SPY)", height=340), width="stretch")
+        ui.chart(c1_, go.Figure(go.Bar(x=rc_df["t"], y=rc_df["beta_c"], marker_color=ui.BLUE2)).update_layout(
+            title=f"Current · beta contribution (book beta {rc_df['beta_c'].sum():.2f}, 1y daily vs SPY)", height=340))
         etf_n = {t: weights[t] * config.LEVERAGE_FACTOR[t] for t in held if t in config.LEVERAGE_FACTOR}
         net_n = sum(weights[t] * config.LEVERAGE_FACTOR.get(t, 1.0) for t in held)
         c1_.caption("Current notional exposure: " + (", ".join(f"{t} {weights[t]:.1%} × {config.LEVERAGE_FACTOR[t]:g} = {v:.1%}"
                                                            for t, v in etf_n.items()) or "no leveraged ETFs")
                     + f" · net notional {net_n:.0%} of NAV")
         corr = rets[held].corr()
-        c2_.plotly_chart(go.Figure(go.Heatmap(z=corr.values, x=corr.columns, y=corr.index, zmin=-1, zmax=1,
+        ui.chart(c2_, go.Figure(go.Heatmap(z=corr.values, x=corr.columns, y=corr.index, zmin=-1, zmax=1,
                                               colorscale=[[0, ui.RED], [0.5, ui.PANEL2], [1, ui.ACCENT]])).update_layout(
-            title="Correlation of holdings (1y daily)", height=340), width="stretch")
+            title="Correlation of holdings (1y daily)", height=340))
         d1_, d2_, d3_ = st.columns(3)
         lev = sum(v for t, v in weights.items() if kind_of.get(t) == "leveraged_etf")
         cap_r = min(config.RISK_LIMITS["max_leveraged_total"],
                     config.REGIME_RULES.get(latest_regime() or "neutral", config.REGIME_RULES["neutral"])["max_leveraged"])
-        d1_.plotly_chart(go.Figure(go.Indicator(mode="gauge+number", value=lev * 100, number={"suffix": "%"},
+        ui.chart(d1_, go.Figure(go.Indicator(mode="gauge+number", value=lev * 100, number={"suffix": "%"},
                                                 gauge={"axis": {"range": [0, 30]}, "bar": {"color": ui.ACCENT},
                                                        "threshold": {"line": {"color": ui.RED, "width": 3}, "value": cap_r * 100}})
-                                   ).update_layout(title="Leveraged sleeve vs regime cap", height=280), width="stretch")
+                                   ).update_layout(title="Leveraged sleeve vs regime cap", height=280))
         adv = analytics.adv20({"close": close, "volume": volume}, list(positions))
         liq = pd.Series({t: positions[t]["shares"] * last_px.get(t, 0) / (0.25 * adv[t]) for t in positions if adv.get(t)})
-        d2_.plotly_chart(go.Figure(go.Bar(x=liq.index, y=liq.values, marker_color=ui.BLUE3)).update_layout(
-            title="Days to exit at 25% of ADV", height=280), width="stretch")
+        ui.chart(d2_, go.Figure(go.Bar(x=liq.index, y=liq.values, marker_color=ui.BLUE3)).update_layout(
+            title="Days to exit at 25% of ADV", height=280))
         uni = [t for t in close.columns if kind_of.get(t) == "stock"]
         mom = (close[uni].shift(21) / close[uni].shift(252) - 1).iloc[-1]
         vol3 = close[uni].pct_change().tail(63).std() * np.sqrt(252)
@@ -562,10 +566,10 @@ with tab_pf:
         book = [t for t in positions if t in uni]
         style = pd.Series({"momentum (12-1m)": mom.rank(pct=True)[book].mean(), "trend (vs 200dma)": trend.rank(pct=True)[book].mean(),
                            "low vol": 1 - vol3.rank(pct=True)[book].mean()}) * 100
-        d3_.plotly_chart(go.Figure(go.Bar(x=style.index, y=style.values, marker_color=ui.ACCENT,
+        ui.chart(d3_, go.Figure(go.Bar(x=style.index, y=style.values, marker_color=ui.ACCENT,
                                           text=[f"{v:.0f}" for v in style.values], textposition="outside")
                                    ).add_hline(y=50, line_dash="dot", line_color=ui.MUTED).update_layout(
-            title="Style of the book vs the S&P 500 (percentile)", height=280, yaxis_range=[0, 110]), width="stretch")
+            title="Style of the book vs the S&P 500 (percentile)", height=280, yaxis_range=[0, 110]))
 
 # --------------------------------------------------------------------------- #
 # Performance
@@ -582,44 +586,43 @@ with tab_perf:
         SESS = dict(type="category", title=None)              # one tick per session, no weekend gaps
         s["d"] = s["date"].dt.strftime("%b %d")
         p1, p2 = st.columns(2)
-        p1.plotly_chart(go.Figure([go.Scatter(x=s["d"], y=(s["total_equity"] / config.STARTING_CAPITAL - 1) * 100, name="Fund",
+        ui.chart(p1, go.Figure([go.Scatter(x=s["d"], y=(s["total_equity"] / config.STARTING_CAPITAL - 1) * 100, name="Fund",
                                               mode="lines+markers", line=dict(width=3)),
                                    go.Scatter(x=s["d"], y=(s["benchmark_px"] / s["benchmark_px"].iloc[0] - 1) * 100, name="SPY",
                                               mode="lines+markers", line=dict(dash="dot", color=ui.BLUE3))]).update_layout(
-            title="Cumulative return vs SPY (%)", height=320, yaxis=PCT, xaxis=SESS), width="stretch")
+            title="Cumulative return vs SPY (%)", height=320, yaxis=PCT, xaxis=SESS))
         dd = s["total_equity"] / s["total_equity"].cummax().clip(lower=config.STARTING_CAPITAL) - 1
         fig = go.Figure(go.Scatter(x=s["d"], y=dd * 100, fill="tozeroy", mode="lines+markers", line=dict(color=ui.RED)))
         for lvl in (config.DD_WARN, config.DD_HARD):
             fig.add_hline(y=lvl * 100, line_dash="dot", line_color=ui.AMBER, annotation_text=f"C11 {lvl:.0%}")
-        p2.plotly_chart(fig.update_layout(title="Drawdown (underwater, %)", height=320, xaxis=SESS,
-                                          yaxis={**PCT, "range": [min(-11, dd.min() * 100 - 1), 1]}), width="stretch")
+        ui.chart(p2, fig.update_layout(title="Drawdown (underwater, %)", height=320, xaxis=SESS,
+                                          yaxis={**PCT, "range": [min(-11, dd.min() * 100 - 1), 1]}))
         dr = s.set_index("d")["total_equity"].pct_change().dropna()
         q1, q2 = st.columns(2)
         if len(dr) < 2:
             with q1:
                 ui.empty("Daily return (%)", "Needs at least 2 daily returns (3 sessions).")
         else:
-            q1.plotly_chart(go.Figure(go.Bar(x=dr.index, y=dr.values * 100, marker_color=[ui.GREEN if v >= 0 else ui.RED for v in dr])
-                                      ).update_layout(title="Daily return (%)", height=280, yaxis=PCT, xaxis=SESS), width="stretch")
+            ui.chart(q1, go.Figure(go.Bar(x=dr.index, y=dr.values * 100, marker_color=[ui.GREEN if v >= 0 else ui.RED for v in dr])
+                                      ).update_layout(title="Daily return (%)", height=280, yaxis=PCT, xaxis=SESS))
         rv = dr.rolling(5).std().dropna() * np.sqrt(252) * 100
         if len(rv) < 2:
             with q2:
                 ui.empty("Rolling 5-day vol (annualised %)", "Needs 6+ sessions.")
         else:
-            q2.plotly_chart(go.Figure(go.Scatter(x=rv.index, y=rv.values, mode="lines+markers", line=dict(color=ui.BLUE2))
-                                      ).update_layout(title="Rolling 5-day vol (annualised %)", height=280, yaxis=PCT, xaxis=SESS),
-                            width="stretch")
+            ui.chart(q2, go.Figure(go.Scatter(x=rv.index, y=rv.values, mode="lines+markers", line=dict(color=ui.BLUE2))
+                                      ).update_layout(title="Rolling 5-day vol (annualised %)", height=280, yaxis=PCT, xaxis=SESS))
         att = report.attribution_result()
         r1, r2 = st.columns(2)
         if att:
             pp = att["cumulative"]["parts"]
             labels = {"sector_calls": "Sector calls", "benchmark_tracking": "SPY vs sector ETFs", "stock_picking": "Selection",
                       "leverage_beta": "Leverage beta", "leverage_decay": "Leverage decay", "cash_drag": "Cash drag"}
-            r1.plotly_chart(go.Figure(go.Waterfall(x=[labels[x] for x in labels] + ["Total vs SPY"],
+            ui.chart(r1, go.Figure(go.Waterfall(x=[labels[x] for x in labels] + ["Total vs SPY"],
                                                    measure=["relative"] * len(labels) + ["total"], y=[pp[x] * 100 for x in labels] + [0],
                                                    increasing={"marker": {"color": ui.GREEN}}, decreasing={"marker": {"color": ui.RED}},
                                                    totals={"marker": {"color": ui.ACCENT}})).update_layout(
-                title="Attribution vs SPY (Brinson-Fachler, Carino)", height=320, yaxis_ticksuffix="%"), width="stretch")
+                title="Attribution vs SPY (Brinson-Fachler, Carino)", height=320, yaxis_ticksuffix="%"))
             r1.caption(att["line"])
         else:
             with r1:
@@ -628,9 +631,8 @@ with tab_perf:
         if not refl.empty:
             rr_ = refl.sort_values("eval_date")
             hit = (rr_["verdict"] == "right").cumsum() / ((rr_["verdict"] != "flat").cumsum().replace(0, np.nan))
-            r2.plotly_chart(go.Figure(go.Scatter(x=pd.to_datetime(rr_["eval_date"]), y=hit * 100, mode="lines+markers")).add_hline(
-                y=50, line_dash="dot", line_color=ui.MUTED).update_layout(title="Committee hit rate over time (%)", height=320),
-                width="stretch")
+            ui.chart(r2, go.Figure(go.Scatter(x=pd.to_datetime(rr_["eval_date"]), y=hit * 100, mode="lines+markers")).add_hline(
+                y=50, line_dash="dot", line_color=ui.MUTED).update_layout(title="Committee hit rate over time (%)", height=320))
         else:
             with r2:
                 ui.empty("Committee hit rate", "The first calls are graded 5 trading days after the first trades.")
@@ -639,8 +641,11 @@ with tab_perf:
         st.markdown("#### Model horse race (same out-of-sample origins, IPS C3.4 weights)")
         sb = pd.DataFrame(hr["content"]["scoreboard"]).T
         sb["weight"] = pd.Series(hr["content"].get("weights", {}))
+        st.markdown(f"**In plain English:** {lab_summary.plain_summary(hr['content'])}")
         st.dataframe(sb, width="stretch")
         st.caption(hr["content"].get("scoreboard_line", ""))
+        with st.expander("How to read this"):
+            st.markdown(lab_summary.HOW_TO_READ)
 
 # --------------------------------------------------------------------------- #
 # Trades
