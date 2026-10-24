@@ -1,3 +1,5 @@
+import config
+
 from .base import Agent, as_map, compact, clip, entry
 
 TILTS = ("overweight", "neutral", "underweight")
@@ -21,13 +23,18 @@ stated reason grounded in the data (e.g. oil up 10% in 5 days). Never force trad
   "confidence": number 0-1,
   "tilt_override": {"sector": "<sector name or empty>", "tilt": "overweight"|"neutral"|"underweight", "reason": "max 25 words"},
   "watch_list": ["max 3 short items: indicators or events to watch"],
-  "rationale": "max 60 words citing the specific indicators"
-}"""
+  "rationale": "max 60 words citing the specific indicators",
+  "hedge_proposal": {"pct": number 0..0.10, "reason": "max 25 words"}
+}
+(hedge_proposal is optional and only read when "soft_hedge" is open in the dashboard: one risk-off signal short of full risk-off.
+ You propose 0-10% SPXU, the PM decides.)"""
 
     def build_prompt(self, ctx):
         m = {k: v for k, v in ctx["macro"].items() if k != "synthetic"}
         return (f"MACRO DASHBOARD:\n{compact(m)}\n\nRULE-BASED REGIME:\n{compact(ctx['regime_info'])}\n"
-                f"RULE-BASED SECTOR TILTS:\n{compact(ctx['rule_tilts'])}")
+                f"RULE-BASED SECTOR TILTS:\n{compact(ctx['rule_tilts'])}"
+                + (f"\nSOFT HEDGE OPEN: risk-off signal(s) {ctx.get('soft_hedge_signals')}; you may propose 0-"
+                   f"{config.SOFT_HEDGE['max']:.0%} {config.SOFT_HEDGE['ticker']} via hedge_proposal." if ctx.get("soft_hedge_open") else ""))
 
     def mock(self, ctx):
         m, r = ctx["macro"], ctx["regime_info"]
@@ -48,7 +55,11 @@ stated reason grounded in the data (e.g. oil up 10% in 5 days). Never force trad
                 applied = {"sector": sec, "tilt": tilt, "reason": str(ov.get("reason", ""))[:200]}
         r = ctx["regime_info"]
         rules = ctx["regime_rules"]
+        hp = as_map(out.get("hedge_proposal"))
+        hedge = ({"hedge_proposal": {"pct": round(clip(hp.get("pct"), 0.0, config.SOFT_HEDGE["max"], 0.0), 3),
+                                     "reason": str(hp.get("reason", ""))[:200]}} if ctx.get("soft_hedge_open") and hp else {})
         return {
+            **hedge,
             "regime": r["regime"],                       # rules decide, not the model
             "raw_regime": r["raw_regime"],
             "regime_note": r["note"],

@@ -311,7 +311,7 @@ def optimise(convictions: dict[str, float], prices: pd.DataFrame, sectors: dict[
              max_names: int, risk_aversion: float = 4.0, diversification: float = 0.5,
              lev_cap_override: float | None = None, min_weight: float = 0.01,
              ensure_min: bool = False, caps: dict[str, float] | None = None,
-             inverse_min: float | None = None, lookback: int = 252) -> dict[str, float]:
+             inverse_min: float | None = None, lookback: int = 252, soft_inverse: float = 0.0) -> dict[str, float]:
     """Mean-variance on the PM's convictions, maximise
         w'mu - (risk_aversion/2) w'Sigma w - diversification * ||w - w_eq||^2
     with every IPS limit as a constraint. Only the top `max_names` convictions
@@ -327,6 +327,8 @@ def optimise(convictions: dict[str, float], prices: pd.DataFrame, sectors: dict[
         inv_hi = L["max_inverse_total"]
     if regime == "risk_off" and inverse_min:                 # C11 hard level: hedge >= 15% in risk-off
         inv_lo, inv_hi = max(inv_lo, inverse_min), max(inv_hi, inverse_min)
+    if soft_inverse > 0 and regime != "risk_off":             # Oct 24 soft hedge: the PM's 0-10% SPXU, exactly that weight
+        inv_lo = inv_hi = min(soft_inverse, L["max_inverse_total"])
     caps = caps or {}
     equity_exposure = float(np.clip(equity_exposure, 1 - L["max_cash_weight"], 1 - L["min_cash_weight"]))
 

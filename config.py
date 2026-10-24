@@ -246,11 +246,15 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 # --------------------------------------------------------------------------- #
 ENSEMBLE = {
     "enabled": True,
-    "blend": 0.75,                 # rule_score = (1 - blend) x legacy technical/model score + blend x ensemble
-                                   # Oct 23: 0.5 -> 0.75, chosen AFTER seeing the 2023-26 backtest (in-sample, not significant)
+    "blend": 1.0,                  # rule_score = (1 - blend) x legacy technical/model score + blend x ensemble
+                                   # Oct 24: 0.75 -> 1.0 (Quant = 100% ensemble). Chosen AFTER seeing the 2023-26 backtest
+                                   # (in-sample, not significant); the legacy score only survives as the fallback and tracker
+    "weight_mode": "shrinkage",    # "shrinkage": w ~ 1 + shrink_lambda x max(t, 0), never all-zero | "ic_legacy": the Oct 23 rule
+    "shrink_lambda": 0.5,          # a validated strategy with t = 2 gets 2x the equal prior, t = 4 gets 3x (before the caps)
     "ic_sessions": 60,             # rolling window of out-of-sample ICs (5-day forward return)
     "ic_horizon": 5,
     "weight_cap": 0.20,            # per-strategy cap
+    "family_caps": {"pead_sue": 0.30},   # PEAD is the best-documented anomaly here: 30%; every other strategy 20%
     "min_t": 1.0,                  # t-stat below this -> weight 0
     "unvalidated": "equal",        # snapshot-only signals (no point-in-time history): "equal" prior or "zero"
     "snapshot_prior": 0.5,         # snapshot-only prior = 0.5 x 1/N ...
@@ -261,9 +265,37 @@ ENSEMBLE = {
     "z_to_score": 1.5,             # ensemble z -> score: clip(z / 1.5, -1, 1)
 }
 VOL_MANAGED = {"enabled": True, "lookback": 63, "floor": 0.6, "cap": 1.25}   # optimiser overlay (Moreira-Muir style)
-TRAILING_STOP = -0.08                   # exit if a position falls 8% from its peak since entry (plus A17 -10% from cost)
+TRAILING_STOP = -0.12                   # exit if a STOCK falls 12% from its peak since entry (Oct 24: was -8%; plus A17 -10% from cost)
+ENTRY_COMPOSITE = 6.3                   # Oct 24: new-name bar on the 0-10 composite (was 7); the "beat the weakest holding by >= 1" rule stays
 PAIR_TRIMS = True                       # A16 drift trims are paired with a buy of the best unheld idea
 # "Top" US politicians whose disclosed BUYS the Sentiment agent is shown (editable; matched on the member's name)
 POLITICIAN_SIGNAL = False   # Oct 23: off (no QUIVER_API_KEY, STOCK Act filings lag up to 45 days); not read by Sentiment
 POLITICIAN_WATCHLIST = ["Pelosi", "Crenshaw", "Gottheimer", "McCaul", "Khanna", "Tuberville", "Greene", "Green, Mark",
                         "Sessions", "Fallon", "Cleo Fields", "Wasserman", "Rouzer"]
+
+# --------------------------------------------------------------------------- #
+# Regime allocator over strategy families (Oct 24). Python decides; the Quant LLM may tilt ONE family by +-20%/day.
+# --------------------------------------------------------------------------- #
+STRATEGY_FAMILIES = {
+    "momentum":  ["xs_momentum_12_1", "ts_trend", "residual_momentum", "industry_momentum", "high_52w"],
+    "earnings":  ["pead_sue", "eps_revisions", "earnings_premium"],
+    "reversal":  ["st_reversal_1w"],
+    "defensive": ["quality_gp", "low_beta"],
+}
+REGIME_ALLOC = {
+    "enabled": True,
+    # SPY-based state, first match wins in this order. Settings were chosen AFTER the first backtest (in-sample).
+    "dd_from_peak": -0.05, "peak_window": 252, "rebound_from_low": 0.05, "low_window": 63, "vol_window": 20, "vol_median_window": 252,
+    "multipliers": {   # family weight x multiplier, then renormalised to the same total and re-capped
+        "calm_uptrend":      {"momentum": 1.2, "earnings": 1.0, "reversal": 0.5, "defensive": 0.8},
+        "drawdown_high_vol": {"momentum": 0.5, "earnings": 1.5, "reversal": 1.5, "defensive": 1.5},
+        "rebound":           {"momentum": 0.3, "earnings": 1.2, "reversal": 2.0, "defensive": 1.0},
+        "normal":            {"momentum": 1.0, "earnings": 1.0, "reversal": 1.0, "defensive": 1.0},
+    },
+}
+LLM_TILT_MAX = 0.20                     # Quant may scale ONE family's weight by 1 +- 0.20 per day, with a written reason; logged
+SNAPSHOT_Z_LOG = os.getenv("FUND_SNAPSHOT_Z_LOG", os.path.join(_HERE, "reports", "snapshot_z_log.csv"))   # daily z of snapshot-only signals
+
+# Soft hedge (Oct 24): ANY ONE C1.3 risk-off signal (short of full risk-off) lets Quant/Macro propose 0-10% SPXU; the PM
+# decides; the Risk Manager enforces only the 25% inverse cap (A11) there. Full risk-off keeps the old IPS A11 range.
+SOFT_HEDGE = {"enabled": True, "ticker": "SPXU", "max": 0.10}

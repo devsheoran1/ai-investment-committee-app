@@ -55,27 +55,31 @@ def _table(**kw):
     return {k: {"n": v[0], "t": v[1], "shrunk_ic": v[2], "validated": v[0] >= 60} for k, v in kw.items()}
 
 
+LEG = {"weight_mode": "ic_legacy"}
+
+
 def test_weights_from_table_rules():
+    """The Oct 23 rule, kept as weight_mode='ic_legacy' for the 'old deployed' backtest."""
     hist = {k: True for k in "abcdef"}
     # everything < 60 sessions -> equal weights
-    w, mode = En.weights_from_table(_table(**{k: (30, 2.0, 0.02) for k in hist}), hist)
+    w, mode = En.weights_from_table(_table(**{k: (30, 2.0, 0.02) for k in hist}), hist, LEG)
     assert all(abs(v - 1 / 6) < 1e-3 for v in w.values()) and "equal-weight" in mode
     # t < 1 -> 0 ; cap 20% ; floor 0
     t = _table(a=(60, 3.0, 0.04), b=(60, 2.5, 0.03), c=(60, 1.5, 0.01), d=(60, 0.5, 0.02), e=(60, -2.0, 0.0), f=(60, 0.0, 0.0))
-    w, _ = En.weights_from_table(t, hist)
+    w, _ = En.weights_from_table(t, hist, LEG)
     assert w["d"] == 0 and w["e"] == 0 and w["f"] == 0                      # t<1, negative, zero
     assert max(w.values()) <= CFG["weight_cap"] + 1e-9
     assert sum(w.values()) <= 3 * CFG["weight_cap"] + 1e-9                   # only 3 survivors: the rest is unallocated
     # a validated pool with no evidence leaves its mass unallocated (not re-given)
     t = _table(**{k: (60, 0.2, 0.0) for k in hist})
-    w, _ = En.weights_from_table(t, hist)
+    w, _ = En.weights_from_table(t, hist, LEG)
     assert sum(w.values()) == 0
     # snapshot-only signal (no history): Oct 23 prior = 0.5 x 1/N capped at 5% (here 0.5/7 = 7.1% -> 5%); "zero" policy removes it
     hist2 = {**hist, "snap": False}
     t = _table(a=(60, 3.0, 0.04), b=(60, 2.5, 0.03), c=(60, 1.5, 0.01), d=(60, 0.5, 0.02), e=(60, -2.0, 0.0), f=(60, 0.0, 0.0), snap=(0, None, 0.0))
-    w, _ = En.weights_from_table(t, hist2)
+    w, _ = En.weights_from_table(t, hist2, LEG)
     assert abs(w["snap"] - min(CFG["snapshot_prior"] / 7, CFG["snapshot_cap"])) < 1e-3 and abs(w["snap"] - 0.05) < 1e-3
-    w, _ = En.weights_from_table(t, hist2, {"unvalidated": "zero"})
+    w, _ = En.weights_from_table(t, hist2, {**LEG, "unvalidated": "zero"})
     assert w["snap"] == 0
 
 

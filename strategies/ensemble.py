@@ -5,8 +5,9 @@ Ensemble: rolling out-of-sample IC -> weights -> one score per ticker (Oct 23, A
                 is fully realised by the decision date (walk-forward, no look-ahead); last 60 such sessions
     t         = mean(IC) / (std(IC) / sqrt(n))
     shrunk IC = mean(IC) x max(0, 1 - 1/t^2)    (positive-part James-Stein: t <= 1 -> 0, noisy t shrunk hardest)
-    weight    = shrunk IC, floored at 0, normalised, capped at 20% each (excess redistributed), t < 1 -> 0
-    < 60 sessions of IC (system-wide, or a snapshot-only signal with no history) -> equal-weight prior (config knob)
+    weight    (Oct 24, "shrinkage") = equal prior x (1 + lambda x max(t, 0)), normalised, capped 20% (PEAD 30%); never all-zero.
+              Snapshot-only signals (no history) get 0.5 x 1/N capped at 5%. The Oct 23 rule survives as weight_mode "ic_legacy".
+    Then the regime allocator (strategies/regime.py) scales whole families and renormalises.
 """
 from __future__ import annotations
 
@@ -48,19 +49,21 @@ def ic_stats(ic: pd.Series, sessions: int, horizon: int | None = None) -> dict:
     return {"n": n, "ic": round(mean, 4), "t": round(t, 2), "shrunk_ic": round(max(mean, 0.0) * shrink, 5)}
 
 
-def cap_weights(w: dict[str, float], cap: float, receivers: set[str] | None = None) -> dict[str, float]:
+def cap_weights(w: dict[str, float], cap: float, receivers: set[str] | None = None,
+                caps: dict[str, float] | None = None) -> dict[str, float]:
     """Cap each weight at `cap` and hand the excess pro rata to the names still below it. The total is preserved
     unless the caps make it unreachable (all positive receivers capped): then it is simply lower ('unallocated').
-    `receivers` limits who may take the excess (default: every positive name)."""
+    `receivers` limits who may take the excess (default: every positive name); `caps` overrides `cap` per name."""
     w = {k: max(float(v), 0.0) for k, v in w.items()}
+    cap_of = lambda k: (caps or {}).get(k, cap)                                  # noqa: E731
     capped: set[str] = set()
     for _ in range(len(w) + 1):
-        over = {k for k, v in w.items() if v > cap + 1e-12}
+        over = {k for k, v in w.items() if v > cap_of(k) + 1e-12}
         if not over:
             break
-        excess = sum(w[k] - cap for k in over)
+        excess = sum(w[k] - cap_of(k) for k in over)
         for k in over:
-            w[k] = cap
+            w[k] = cap_of(k)
         capped |= over
         free = {k for k, v in w.items() if v > 0 and k not in capped and (receivers is None or k in receivers)}
         room = sum(w[k] for k in free)
@@ -96,29 +99,68 @@ def learn_weights(d: Data, strategies: list[Strategy], panels: dict[str, pd.Data
     return {"weights": weights, "table": table, "mode": mode, "allocated": round(sum(weights.values()), 4)}
 
 
+def weight_caps(has_history: dict[str, bool], cfg: dict) -> dict[str, float]:
+    """Per-strategy cap: PEAD 30% (family_caps), snapshot-only signals 5%, everything else 20%."""
+    return {k: (cfg["family_caps"].get(k, cfg["weight_cap"]) if h else min(cfg["snapshot_cap"], cfg["weight_cap"]))
+            for k, h in has_history.items()}
+
+
 def weights_from_table(table: dict, has_history: dict[str, bool], cfg: dict | None = None) -> tuple[dict, str]:
     """IC table -> weights. Shared by the live run and the backtest so both use exactly the same rule."""
     cfg = {**config.ENSEMBLE, **(cfg or {})}
+    if cfg["weight_mode"] == "ic_legacy":
+        return _weights_ic_legacy(table, has_history, cfg)
+    names = list(has_history)
+    n = max(len(names), 1)
+    snap = {k: (min(cfg["snapshot_prior"] / n, cfg["snapshot_cap"]) if cfg["unvalidated"] == "equal" else 0.0)
+            for k in names if not has_history[k]}
+    hist = [k for k in names if has_history[k]]
+    # equal prior + lambda x max(t, 0): a strategy with a validated positive t gets more say, nobody ever gets zero
+    raw = {k: 1.0 + cfg["shrink_lambda"] * max((table[k]["t"] or 0.0) if table[k]["validated"] else 0.0, 0.0) for k in hist}
+    mass = 1.0 - sum(snap.values())
+    tot = sum(raw.values()) or 1.0
+    w = {k: mass * v / tot for k, v in raw.items()}
+    w.update(snap)
+    weights = cap_weights(w, cfg["weight_cap"], receivers=set(hist), caps=weight_caps(has_history, cfg))
+    up = [k for k in hist if raw[k] > 1.0]
+    mode = (f"shrinkage weights: equal prior + {cfg['shrink_lambda']:g} x max(t, 0) ({len(up)}/{len(hist)} strategies above the prior, "
+            f"caps {cfg['weight_cap']:.0%}, PEAD {cfg['family_caps'].get('pead_sue', cfg['weight_cap']):.0%}); "
+            f"{len(snap)} snapshot-only at {cfg['snapshot_prior']:g} x 1/N, cap {cfg['snapshot_cap']:.0%}")
+    return weights, mode
+
+
+def _weights_ic_legacy(table: dict, has_history: dict[str, bool], cfg: dict) -> tuple[dict, str]:
+    """The Oct 23 rule (kept for the 'old deployed' backtest variant): shrunk IC, t < 1 -> 0."""
     names = list(has_history)
     n = max(len(names), 1)
     validated = [k for k in names if table[k]["validated"]]
     prior = [k for k in names if not table[k]["validated"] and (has_history[k] or cfg["unvalidated"] == "equal")]
     w: dict[str, float] = {k: 0.0 for k in names}
     for k in prior:
-        # snapshot-only signals (no history to measure) get half the equal prior, capped; price-based ones keep 1/N
         w[k] = 1.0 / n if has_history[k] else min(cfg["snapshot_prior"] / n, cfg["snapshot_cap"])
     ic_pos = {k: table[k]["shrunk_ic"] for k in validated if (table[k]["t"] or 0) >= cfg["min_t"] and table[k]["shrunk_ic"] > 0}
     if ic_pos:
         tot = sum(ic_pos.values())
         for k, v in ic_pos.items():
             w[k] = len(validated) / n * v / tot
-    weights = cap_weights(w, cfg["weight_cap"], receivers=set(ic_pos))        # excess only flows to proven strategies
-    if not validated:
-        mode = f"equal-weight prior (< {cfg['ic_sessions']} sessions of IC)"
-    else:
-        mode = (f"IC-weighted: {len(ic_pos)}/{len(validated)} validated strategies cleared t >= {cfg['min_t']:.0f}"
-                f" (shrunk IC, cap {cfg['weight_cap']:.0%}); {len(prior)} at the equal-weight prior")
+    weights = cap_weights(w, cfg["weight_cap"], receivers=set(ic_pos))
+    mode = (f"IC-weighted: {len(ic_pos)}/{len(validated)} validated strategies cleared t >= {cfg['min_t']:.0f}" if validated
+            else f"equal-weight prior (< {cfg['ic_sessions']} sessions of IC)")
     return weights, mode
+
+
+def reweight(weights: dict[str, float], mult: dict[str, float], has_history: dict[str, bool], cfg: dict | None = None) -> dict:
+    """Multiply weights by per-strategy factors, renormalise to the SAME total, re-apply the caps (history-based only
+    receive the excess). Used by the regime allocator and by the Quant LLM's family tilt."""
+    cfg = {**config.ENSEMBLE, **(cfg or {})}
+    total = sum(weights.values())
+    w2 = {k: v * mult.get(k, 1.0) for k, v in weights.items()}
+    s2 = sum(w2.values())
+    if total <= 0 or s2 <= 0:
+        return dict(weights)
+    w2 = {k: v * total / s2 for k, v in w2.items()}
+    caps = weight_caps({k: has_history.get(k, True) for k in w2}, cfg)
+    return cap_weights(w2, cfg["weight_cap"], receivers={k for k in w2 if has_history.get(k, True) and w2[k] > 0}, caps=caps)
 
 
 def score_cross_section(zrows: dict[str, pd.Series], rawrows: dict[str, pd.Series], strategies: list[Strategy],

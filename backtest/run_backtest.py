@@ -17,6 +17,7 @@ import pandas as pd
 
 import config
 from backtest import data_bt, engine as E
+from strategies import regime as R
 
 OUT = os.path.join(config.BASE_DIR, "reports", "backtest")
 START = "2023-10-23"
@@ -69,15 +70,17 @@ def main(quick: bool = False) -> dict:
     P = E.prepare(px, uni, earn)
     end = str(P.close.index[-1].date())
 
-    W = E.weight_history(P)
+    OLD = {"weight_mode": "ic_legacy"}                       # Oct 23 rule: A-H and P1-P8 stay exactly the old study
+    W = E.weight_history(P, cfg=OLD)
     ens, votes, alloc = E.ensemble_panels(P, W)
-    dep = E.as_deployed(P, ens, alloc)
+    dep = E.as_deployed(P, ens, alloc, blend=0.75)
     Weq = E.weight_history(P, equal=True)
     ens_eq, votes_eq, alloc_eq = E.ensemble_panels(P, Weq)
 
     runs: dict[str, dict] = {}
 
     def sim(label, score, v, **kw):
+        kw.setdefault("trail_pct", -0.08)                    # old group: the Oct 23 -8% trailing stop
         res = [E.simulate(P, score, v, start=start_of(o), **kw) for o in OFFSETS]
         runs[label] = {**res[0], "ms": [E.metrics(r["nav"], r["turnover_one_way"]) for r in res]}
         return runs[label]
@@ -99,6 +102,20 @@ def main(quick: bool = False) -> dict:
     sim("P6. A: daily, trim pairing OFF, trailing ON", dep, votes, freq="D", pair_trims=False)
     sim("P7. A: daily, trim pairing ON,  trailing OFF", dep, votes, freq="D", trailing=False)
     sim("P8. A: daily, trim pairing OFF, trailing OFF", dep, votes, freq="D", pair_trims=False, trailing=False)
+
+    # ---- Oct 24 settings: shrinkage weights, Quant = 100% ensemble, -12% trailing stop; with and without the regime allocator
+    NEW = {"weight_mode": "shrinkage"}
+    W_new = E.weight_history(P, cfg=NEW)
+    W_reg = E.weight_history(P, cfg=NEW, regime=True)
+    s_new, v_new, a_new = E.ensemble_panels(P, W_new)
+    s_reg, v_reg, a_reg = E.ensemble_panels(P, W_reg)
+    new_dep = E.as_deployed(P, s_new, a_new, blend=1.0)
+    reg_dep = E.as_deployed(P, s_reg, a_reg, blend=1.0)
+    NEWKW = {"trail_pct": config.TRAILING_STOP}
+    sim("N0. OLD deployed (Oct 23: IC weights, blend 0.75, -8% trail)", dep, votes)
+    sim("N1. NEW (shrinkage, 100% ensemble, -12% trail), no regime allocator", new_dep, v_new, **NEWKW)
+    sim("N2. NEW + regime allocator", reg_dep, v_reg, **NEWKW)
+    states = R.regime_states(P.close[config.BENCHMARK])
 
     bench = {b: E.buy_hold(P.close, P.open, b, START) for b in data_bt.BENCH}
     head = {lab: mean_metrics(r["ms"]) for lab, r in runs.items()}
@@ -136,11 +153,60 @@ def main(quick: bool = False) -> dict:
     json.dump({k: {kk: vv for kk, vv in v.items() if not kk.startswith("_")} for k, v in mc.items()},
               open(os.path.join(OUT, "montecarlo.json"), "w"), indent=1)
 
+    wk = states[states.index >= START]
+    last = pd.Series(wk.index.isocalendar().week.values, index=wk.index)
+    wk = wk[last.ne(last.shift(-1))]
+    wk.rename("state").to_csv(os.path.join(OUT, "regime_weekly.csv"))
+    W_reg.loc[START:].iloc[::5].to_csv(os.path.join(OUT, "weights_weekly_regime.csv"))
     charts(runs, bench, stand, drop, mc, W)
     md = summary_md(P, W, tbl, head, bm, runs, drop, stand, etf, tom, mc, end, time.time() - t0)
+    md = md.replace("## 1. Variants vs benchmarks", new_section(P, head, bm, runs, states, wk) + "\n## 1. Variants vs benchmarks", 1)
     open(os.path.join(OUT, "summary.md"), "w").write(md)
     print(f"done in {time.time() - t0:.0f}s -> {OUT}/summary.md")
     return {"head": head, "bench": bm, "drop": drop, "stand": stand, "mc": mc, "runs": runs}
+
+
+def new_section(P, head, bm, runs, states, wk) -> str:
+    keys = [k for k in head if k.startswith("N")]
+    cmp_ = pd.DataFrame({**{k: row(head[k]) for k in keys}, **{f"{b} (buy & hold)": row(bm[b]) for b in ("SPY", "RSP", "MTUM")}}).T
+    cmp_.index.name = "Variant"
+    # which state was each week in, as consecutive runs
+    runs_md, start, prev, n = [], None, None, 0
+    for d, st in wk.items():
+        if st != prev:
+            if prev is not None:
+                runs_md.append((start, last_d, prev, n))
+            start, prev, n = d, st, 0
+        n += 1
+        last_d = d
+    runs_md.append((start, last_d, prev, n))
+    counts = wk.value_counts()
+    cnt = ", ".join(f"{k} {counts.get(k, 0)} wks ({counts.get(k, 0) / len(wk):.0%})" for k in R.STATES)
+    wr = pd.DataFrame({"weeks": [int(counts.get(k, 0)) for k in R.STATES]}, index=R.STATES)
+    for k in keys:
+        nav = runs[k]["nav"]
+        wret = nav.reindex(wk.index, method="ffill").pct_change().shift(-1)         # return over the week AFTER the state was read
+        wr[k[:2] + " avg weekly return"] = [pct(wret[wk == st].mean(), 2) if (wk == st).any() else "n/a" for st in R.STATES]
+    wr.index.name = "State at Friday close"
+    rl = "\n".join(f"- {a.date()} → {b.date()}: **{st}** ({n} wk)" for a, b, st, n in runs_md)
+    return f"""## 0. Old vs new settings (Oct 24)
+
+N0 = the Oct 23 deployment (IC-weighted strategies, Quant 75% ensemble, −8% trailing stop). N1 = the new settings: shrinkage weights
+(equal prior + λ·max(t, 0), never all-zero, PEAD cap 30%), Quant = 100% ensemble, −12% trailing stop. N2 = N1 plus the regime allocator
+(family weights × SPY-state multipliers, renormalised). Same six staggered starts, same rule-based sleeve, next-open fills, zero cost.
+
+{md_table(cmp_)}
+
+**These settings were chosen after the first backtest, on the same 2023–26 window: they are in-sample, not significant, and the Sharpe
+range over the six starts is the noise floor. Do not read N1/N2 > N0 as skill.** The 15-day live race cannot tell them apart either.
+
+Regime state per week (read at Friday close; {len(wk)} weeks; {cnt}). Week-by-week CSV: `regime_weekly.csv`.
+
+{md_table(wr)}
+
+{rl}
+
+"""
 
 
 # ------------------------------------------------------------------------------------------------- charts
@@ -245,8 +311,8 @@ Three years of one mostly bullish regime is far too little to separate skill fro
 
 {md_table(cut)}
 
-A = what the Quant agent computes before the LLM sees it (`rule_score` = legacy technical score blended with the ensemble by
-0.5 × the allocated ensemble weight). B/C isolate the ensemble. D is the old Quant score. E–H test one design choice at a time.
+A = the OCTOBER 23 Quant agent before the LLM sees it (`rule_score` = legacy technical score blended with the ensemble by
+0.75 × the allocated ensemble weight; IC-weighted strategies, −8% trailing stop). The Oct 24 settings are in section 0. B/C isolate the ensemble. D is the old Quant score. E–H test one design choice at a time.
 Turnover is one-way traded value per year ÷ average NAV; MTUM and RSP are buy-and-hold ETFs on the same open-to-close basis.
 
 ## 2. Profit-taking without cash and the trailing stop (B1 / B2 ablation, on A)
@@ -304,7 +370,7 @@ class competition: with this horizon, the P&L ranking is mostly noise.
 - **Earnings data:** EPS surprises come from yfinance's history (reported values, some restatement risk); `earnings_premium` uses the realised report dates, which companies announce weeks ahead (small look-ahead if a date moved).
 - **Not in the loop:** LSTM / Kronos / LightGBM, regime rules, leveraged-ETF trading, the mean-variance optimiser (a rule-based weighting stands in), PM/Risk/CIO judgement. This is the Quant sleeve, not the fund.
 - **Single regime, 3 years:** one bull-market window, ablations are multiple comparisons on the same data; none of the differences is claimed significant.
-- **Design parameters** (blend 0.5, 20% cap, 60-session IC, −8% trailing stop, 15 names, 5-day cooldown after a stop) were fixed in advance, not tuned on this sample.
+- **Design parameters** (blend 0.75 (old group), 20% cap, 60-session IC, −8% trailing stop (old group; −12% in section 0), 15 names, 5-day cooldown after a stop) were fixed in advance, not tuned on this sample.
 - **Monte Carlo** resamples this same in-sample history; it states the spread of 15-day outcomes, not a forecast.
 
 _Generated by `backtest/run_backtest.py` in {secs:.0f}s from `data/cache/bt/` (prices + earnings history)._

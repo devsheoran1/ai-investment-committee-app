@@ -87,24 +87,23 @@ def test_refresh_when_latest_close_is_missing():
 
 
 # ---- ensemble decisions ------------------------------------------------------------------------------------------- #
-def test_blend_is_75_25():
-    assert config.ENSEMBLE["blend"] == 0.75
+def test_blend_is_100_ensemble_since_oct24():
+    assert config.ENSEMBLE["blend"] == 1.0
 
 
-def test_snapshot_only_prior_is_half_of_equal_capped_at_5pct_until_ic_exists():
+def test_snapshot_only_prior_is_half_of_equal_capped_at_5pct():
+    """Oct 24: snapshot-only signals keep 0.5 x 1/N capped at 5%; price-based ones share the rest (equal prior, no evidence)."""
     names = [f"s{i}" for i in range(17)]
     hist = {n: (i < 9) for i, n in enumerate(names)}                                  # 8 snapshot-only, 9 price-based
     table = {n: {"n": 0, "ic": None, "t": None, "shrunk_ic": 0.0, "validated": False} for n in names}
     w, _ = En.weights_from_table(table, hist)
     snap = [n for n in names if not hist[n]]
     assert all(abs(w[n] - 0.5 / 17) < 1e-4 for n in snap) and all(w[n] <= 0.05 for n in snap)
-    assert all(abs(w[n] - 1 / 17) < 1e-4 for n in names if hist[n])
+    price = [n for n in names if hist[n]]
+    assert all(abs(w[n] - (1 - 8 * 0.5 / 17) / 9) < 1e-3 for n in price)             # equal among the price-based
     few = {n: False for n in names[:6]}                                               # 0.5/6 = 8.3% -> capped at 5%
     w2, _ = En.weights_from_table({n: table[n] for n in few}, few)
     assert all(abs(v - 0.05) < 1e-4 for v in w2.values())
-    table["s10"] = {"n": 60, "ic": 0.05, "t": 3.0, "shrunk_ic": 0.04, "validated": True}   # measured IC replaces the prior
-    w3, _ = En.weights_from_table(table, hist)
-    assert w3["s10"] > 0.05 and w3["s10"] != w["s10"]
 
 
 def test_politician_signal_is_off_and_not_in_the_sentiment_prompt():

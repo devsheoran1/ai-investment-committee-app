@@ -1,6 +1,7 @@
 import numpy as np
 
 import config
+from strategies import regime as strat_regime
 
 from .base import Agent, as_map, compact, clip, entry
 
@@ -19,8 +20,12 @@ Score -1..+1 (0 = no edge). Use the range: the PM needs to see who is strongest.
     output_schema = """{
   "signals": {"<TICKER>": {"score": number -1..1, "comment": "max 20 words"}},
   "model_reliability": "low" | "medium" | "high",
-  "note": "max 40 words on how much you relied on the LSTM and why"
-}"""
+  "note": "max 40 words on how much you relied on the LSTM and why",
+  "family_tilt": {"family": "momentum"|"earnings"|"reversal"|"defensive"|"", "pct": number -0.2..0.2, "reason": "max 25 words"},
+  "hedge_proposal": {"pct": number 0..0.10, "reason": "max 25 words"}
+}
+(family_tilt and hedge_proposal are optional. family_tilt scales ONE strategy family's ensemble weight by 1+pct, needs a
+written reason and is logged. hedge_proposal is only read when "soft_hedge" is open in the brief; the PM decides.)"""
 
     # How to read the model scoreboard (same wording as lab_summary.py, the Model Lab and the daily report):
     #   hit = how often a model called the 5-day direction right on unseen data; always-up = the lazy "stocks usually go
@@ -112,6 +117,17 @@ Score -1..+1 (0 = no edge). Use the range: the PM needs to see who is strongest.
                f"(pred_5d_return_pct / lstm_p_up = LSTM forecast and P(up); kronos_ret = Kronos-mini 5d forecast in %; "
                f"lgbm_pred = LightGBM 5d forecast in %; pead_drift = post-earnings drift -1..+1; rule_score = Python's "
                f"rule-based score from the C3.2 signals and the C3.4 model weights; null = not available):\n{compact(rows)}")
+        ens = ctx.get("ensemble") or {}
+        if ens.get("weights"):
+            fam = {}
+            for k, w in ens["weights"].items():
+                f = strat_regime.family_of(k) or "other"
+                fam[f] = round(fam.get(f, 0.0) + w, 3)
+            txt += (f"\n\nENSEMBLE REGIME (Python, SPY-based): {ens.get('regime_state')}; family weights after the regime allocator: "
+                    f"{compact(fam)}. You MAY tilt ONE family by up to +-{config.LLM_TILT_MAX:.0%} via family_tilt, only with a written reason.")
+        if ctx.get("soft_hedge_open"):
+            txt += (f"\n\nSOFT HEDGE OPEN: risk-off signal(s) {ctx.get('soft_hedge_signals')}. You may propose 0-"
+                    f"{config.SOFT_HEDGE['max']:.0%} {config.SOFT_HEDGE['ticker']} via hedge_proposal; the PM decides.")
         if race:
             txt += (f"\n\nMODEL WEIGHTS THIS CYCLE (C3.4, computed in Python): {compact(race.get('weights'))}\n"
                     f"MODEL SCOREBOARD: {race['scoreboard_line']}")
@@ -162,11 +178,14 @@ Score -1..+1 (0 = no edge). Use the range: the PM needs to see who is strongest.
         bd = self.breakdown(ctx)
         race = ctx.get("race") or {}
         sig = {}
+        tilt = self._family_tilt(out, ctx)
         for t in ctx["tickers"]:
             r = entry(src, t)
             fallback = clip(r.get("score"), default=None) is None if r else True
             # missing / invalid LLM score -> the rules score already computed, flagged; never a silent 0.0
             score = round(bd[t]["rule_score"] if fallback else clip(r.get("score")), 2)
+            if tilt and tilt.get("applied") and t in tilt["_delta"]:      # bounded family tilt: shift by the change in the ensemble score
+                score = round(float(np.clip(score + tilt["_delta"][t], -1, 1)), 2)
             x = ctx["technicals"][t]
             rsi, above200 = x.get("rsi_14") or 50, (x.get("px_vs_200dma_pct") or 0) > 0
             if rsi > 75 and score > 0:                                   # C3.3: RSI > 75 cuts the score
@@ -185,9 +204,15 @@ Score -1..+1 (0 = no edge). Use the range: the PM needs to see who is strongest.
             if lv.get("kronos_ret") is not None:
                 sig[t]["kronos_ret"], sig[t]["kronos_p_up"] = lv["kronos_ret"], lv["kronos_p_up"]
         rel = str(out.get("model_reliability", "low")).lower()
+        hp = as_map(out.get("hedge_proposal"))
         res = {"signals": sig, "model_reliability": rel if rel in ("low", "medium", "high") else "low",
                "model_weights": race.get("weights") or {"lstm": 0.0, "kronos": 0.0, "lgbm": 0.0},
                "note": str(out.get("note", ""))[:400]}
+        if tilt:
+            res["family_tilt"] = {k: v for k, v in tilt.items() if not k.startswith("_")}
+        if ctx.get("soft_hedge_open") and hp:
+            res["hedge_proposal"] = {"pct": round(clip(hp.get("pct"), 0.0, config.SOFT_HEDGE["max"], 0.0), 3),
+                                     "reason": str(hp.get("reason", ""))[:200]}
         n_fb = sum(1 for v in sig.values() if v["fallback"])
         if out.get("quant_fallback"):
             res["quant_fallback"] = out["quant_fallback"]
@@ -197,5 +222,33 @@ Score -1..+1 (0 = no edge). Use the range: the PM needs to see who is strongest.
             res["model_scoreboard"] = race["scoreboard_line"]
         ens = ctx.get("ensemble")
         if ens:
-            res["strategy_ensemble"] = {k: ens.get(k) for k in ("mode", "allocated", "weights", "ic_table", "skipped", "tom_tilt", "asof")}
+            res["strategy_ensemble"] = {k: ens.get(k) for k in ("mode", "allocated", "weights", "weights_pre_regime", "regime_state", "regime_mult", "ic_table", "skipped", "tom_tilt", "asof")}
+            if tilt:
+                res["strategy_ensemble"]["tilted_weights"] = tilt.get("weights_after")
         return res
+
+    @staticmethod
+    def _family_tilt(out, ctx) -> dict | None:
+        """Oct 24: the LLM may scale ONE family's ensemble weight by 1 +- 20% with a written reason. Bounded, logged,
+        recomputed in Python from the stored per-strategy z; it never touches Risk limits."""
+        ft = as_map(out.get("family_tilt"))
+        fam = str(ft.get("family") or "").lower()
+        ens = ctx.get("ensemble") or {}
+        if not ft or fam not in config.STRATEGY_FAMILIES or not ens.get("weights"):
+            return None
+        pct = float(np.clip(clip(ft.get("pct"), -1.0, 1.0, 0.0), -config.LLM_TILT_MAX, config.LLM_TILT_MAX))
+        reason = str(ft.get("reason") or "").strip()[:200]
+        rec = {"family": fam, "pct": round(pct, 3), "reason": reason, "applied": False, "_delta": {}}
+        if not reason or pct == 0.0:
+            rec["note"] = "ignored: " + ("no written reason" if not reason else "zero tilt")
+            return rec
+        w0 = ens["weights"]
+        w1 = strat_regime.tilt(w0, fam, pct, ens.get("has_history") or {k: True for k in w0})
+        for t, e in (ens.get("scores") or {}).items():
+            if e.get("score") is None:
+                continue
+            new = strat_regime.rescore(e.get("strategies") or {}, w1)
+            if new is not None:
+                rec["_delta"][t] = config.ENSEMBLE["blend"] * (new - e["score"])
+        rec.update(applied=True, weights_before=w0, weights_after=w1)
+        return rec

@@ -21,7 +21,7 @@ def _row(rule, value, limit, ok, kind, fmt="{:.1%}"):
     return {"rule": rule, "value": f(value), "limit": limit, "status": "pass" if ok else "fail", "kind": kind}
 
 
-def classify(rr: dict) -> dict:
+def classify(rr: dict, soft_hedge_open: bool = False) -> dict:
     """Turn a risk report into the Risk Manager's verdict lists + a pass/fail table (IPS E3)."""
     L, R = config.RISK_LIMITS, config.REGIME_RULES[rr["regime"]]
     S = config.SOFT_REJECT
@@ -57,8 +57,10 @@ def classify(rr: dict) -> dict:
     inv_total = rr.get("inverse_etf_weight", 0.0)
     add("Inverse total (A11)", inv_total, f"<= {L['max_inverse_total']:.0%}", inv_total <= L["max_inverse_total"] + EPS,
         "hard", f"inverse ETFs {inv_total:.1%} > {L['max_inverse_total']:.0%} (IPS A11)")
-    add("Inverse only in risk-off (A11)", "yes" if inv_total > 0 else "none", "risk-off only",
-        inv_total <= EPS or rr["regime"] == "risk_off", "hard", "inverse ETFs held outside risk-off (IPS A11)")
+    add("Inverse only in risk-off (A11)", "yes" if inv_total > 0 else "none",
+        "risk-off, or one risk-off signal (soft hedge)" if soft_hedge_open else "risk-off only",
+        inv_total <= EPS or rr["regime"] == "risk_off" or soft_hedge_open, "hard",
+        "inverse ETFs held outside risk-off (IPS A11)")        # Oct 24: with one risk-off signal only the 25% cap above binds
     vol, var = rr.get("portfolio_vol_ann", 0.0), rr.get("var_95_1d", 0.0)
     add("Portfolio vol (A3)", vol, f"<= {L['max_portfolio_vol']:.0%}", vol <= L["max_portfolio_vol"] + EPS, "hard",
         f"volatility {vol:.1%} > {L['max_portfolio_vol']:.0%} (IPS A3)")
@@ -108,9 +110,9 @@ def classify(rr: dict) -> dict:
             "soft_concerns": soft + warn}
 
 
-def check_book(weights, prices, sectors, asset_types, regime, **kw) -> dict:
+def check_book(weights, prices, sectors, asset_types, regime, soft_hedge_open: bool = False, **kw) -> dict:
     """The Risk Manager's check of a (post-trade) book: metrics from analytics, verdict from classify()."""
-    return classify(analytics.risk_report(weights, prices, sectors, asset_types, regime, **kw))
+    return classify(analytics.risk_report(weights, prices, sectors, asset_types, regime, **kw), soft_hedge_open=soft_hedge_open)
 
 
 def fix_hints(rr: dict) -> list[str]:

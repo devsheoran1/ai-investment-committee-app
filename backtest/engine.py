@@ -79,8 +79,9 @@ def prepare(px: dict, uni: pd.DataFrame, earn_events: dict | None = None) -> Pre
                 legacy=legacy_technical(close, stocks), eligible=elig, vol63=vol63, names=list(z))
 
 
-def weight_history(P: Prep, exclude: tuple = (), equal: bool = False, cfg: dict | None = None) -> pd.DataFrame:
-    """Per-date ensemble weights, learned only from ICs whose forward return was realised by that date."""
+def weight_history(P: Prep, exclude: tuple = (), equal: bool = False, cfg: dict | None = None, regime: bool = False) -> pd.DataFrame:
+    """Per-date ensemble weights, learned only from ICs whose forward return was realised by that date.
+    regime=True applies the Oct 24 regime allocator (SPY-state family multipliers, renormalised, re-capped) to every row."""
     cfg = {**config.ENSEMBLE, **(cfg or {})}
     names = [n for n in P.names if n not in exclude]
     if equal:
@@ -97,7 +98,13 @@ def weight_history(P: Prep, exclude: tuple = (), equal: bool = False, cfg: dict 
                      "shrunk_ic": 0.0 if pd.isna(shrunk.iat[i, j]) else float(shrunk.iat[i, j]),
                      "validated": int(n.iat[i, j]) >= cfg["ic_sessions"]} for j, k in enumerate(names)}
         rows.append(weights_from_table(table, hist, cfg)[0])
-    return pd.DataFrame(rows, index=known.index).reindex(columns=names).fillna(0.0)
+    W = pd.DataFrame(rows, index=known.index).reindex(columns=names).fillna(0.0)
+    if regime:
+        from strategies import regime as R
+        states = R.regime_states(P.close[config.BENCHMARK]).reindex(W.index).fillna("normal")
+        W = pd.DataFrame([R.apply_state(W.iloc[i].to_dict(), states.iat[i], hist, cfg) for i in range(len(W))],
+                         index=W.index).reindex(columns=names).fillna(0.0)
+    return W
 
 
 def ensemble_panels(P: Prep, W: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
@@ -119,9 +126,9 @@ def ensemble_panels(P: Prep, W: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFram
     return score, pd.DataFrame(votes, index=P.close.index, columns=P.stocks), W.sum(axis=1)
 
 
-def as_deployed(P: Prep, score: pd.DataFrame, alloc: pd.Series) -> pd.DataFrame:
+def as_deployed(P: Prep, score: pd.DataFrame, alloc: pd.Series, blend: float | None = None) -> pd.DataFrame:
     """Quant's rule_score: (1 - b) x legacy technical + b x ensemble, b = blend x allocated weight (live code path)."""
-    b = (config.ENSEMBLE["blend"] * alloc).clip(0, 1).values[:, None]
+    b = ((config.ENSEMBLE["blend"] if blend is None else blend) * alloc).clip(0, 1).values[:, None]
     e = score.reindex(index=P.legacy.index)
     return ((1 - b) * P.legacy + b * e.where(e.notna(), P.legacy)).where(P.legacy.notna() | e.notna())
 
@@ -159,7 +166,7 @@ def cap_book(w: dict, sector: dict, total: float, name_cap=0.20, sec_cap=0.35) -
 def simulate(P: Prep, score: pd.DataFrame, votes: pd.DataFrame | None, *, freq: str = "W", n_names: int = 15,
              pair_trims: bool = True, trailing: bool = True, stop: bool = True, vote_gate: bool = True,
              vol_managed: bool = True, cost_bps: float = 0.0, start: str = "2023-10-23", end: str | None = None,
-             cooldown_days: int = 5) -> dict:
+             cooldown_days: int = 5, trail_pct: float | None = None) -> dict:
     idx = P.close.index
     i0 = int(idx.searchsorted(pd.Timestamp(start)))
     i1 = len(idx) - 1 if end is None else int(idx.searchsorted(pd.Timestamp(end), side="right")) - 1
@@ -225,7 +232,7 @@ def simulate(P: Prep, score: pd.DataFrame, votes: pd.DataFrame | None, *, freq: 
                 forced[t] = "stop-loss"
             elif trailing:
                 dd, _ = analytics.trailing_drawdown(p["avg_cost"], px, P.close[t].loc[p["opened_date"]:day].values)
-                if dd <= config.TRAILING_STOP:
+                if dd <= (config.TRAILING_STOP if trail_pct is None else trail_pct):
                     forced[t] = "trailing stop"
         for t in forced:
             cool[t] = i + cooldown_days

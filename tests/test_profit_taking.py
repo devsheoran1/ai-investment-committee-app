@@ -139,11 +139,11 @@ def test_trailing_stop_fires_at_minus_8_percent_from_the_peak_since_entry_only()
     s.iloc[5] = 140.0                                                          # a peak BEFORE we bought: must not count
     s.iloc[15] = 112.0                                                         # the peak since entry
     pos = {"shares": 10, "avg_cost": 100.0, "opened_date": str(idx[10].date())}
-    assert _trailing_stop(pos, 112.0 * 0.921, s) is None                       # -7.9% from the peak
-    why = _trailing_stop(pos, 112.0 * 0.919, s)                                # -8.1%
-    assert why and "trailing stop" in why and "-8" in why
+    assert _trailing_stop(pos, 112.0 * 0.881, s) is None                       # -11.9% from the peak
+    why = _trailing_stop(pos, 112.0 * 0.879, s)                                # -12.1%
+    assert why and "trailing stop" in why and "-12" in why
     assert _trailing_stop({**pos, "opened_date": str(idx[0].date())}, 112.0 * 0.919, s)    # peak 140 if bought earlier
-    assert config.TRAILING_STOP == -0.08 and config.STOP_LOSS == -0.10          # the IPS A17 stop is untouched
+    assert config.TRAILING_STOP == -0.12 and config.STOP_LOSS == -0.10          # the IPS A17 stop is untouched
 
 
 # ---------------------------------------------------------------------------------------------- vol-managed sizing

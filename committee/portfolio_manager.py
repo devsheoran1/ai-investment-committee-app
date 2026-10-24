@@ -12,7 +12,7 @@ you set a CONVICTION per name (-1 = exit/avoid, 0 = no view, +1 = maximum overwe
 and the fund's optimiser converts them into weights under the IPS limits (20% max per
 stock, 35% per sector, leveraged ETFs capped by regime and by their vol-targeted caps, >= 95% invested, 10-20 names).
 The composite (0-10 scale) blends Quant 40%, Sentiment 30%, Research 15%, Macro 15%.
-Entry rule for a NEW name on a daily run (IPS C5.3): composite >= 7/10, Quant >= 6/10,
+Entry rule for a NEW name on a daily run (IPS C5.3): composite >= 6.3/10, Quant >= 6/10,
 in the shortlist's top 10 and >= 1 point above the weakest holding; the brief's
 "eligible_new" list already applies it, other new names will be ignored.
 Exits (C5.4): stop-loss, severe news, leveraged ETFs held 5 days and leveraged longs in
@@ -31,6 +31,8 @@ invalidation price has already been hit: you MUST answer each one in invalidatio
 with "exit" or "hold" plus the reason; an unanswered one is treated as an exit candidate.
 DEVIL'S ADVOCATE (C0.1): if the brief contains "devils_advocate", answer EVERY objection in da_responses (proceed,
 downsize or drop + why) and adjust convictions accordingly. You decide; the CIO reads both.
+SOFT HEDGE: when the brief has "soft_hedge" (one risk-off signal, not full risk-off), Quant/Macro may propose 0-10% SPXU.
+You decide the weight in `soft_hedge` (0 = no hedge); the Risk Manager only enforces the 25% inverse cap.
 EARNINGS: "earnings_soon" lists names reporting within 5 trading days (binary risk, or the C5.3 fast track:
 Sentiment >= +0.7 and Quant >= 5/10, max 10% NAV). "pead" is post-earnings drift (+ = beat confirmed by the market)."""
     output_schema = """{
@@ -39,7 +41,8 @@ Sentiment >= +0.7 and Quant >= 5/10, max 10% NAV). "pead" is post-earnings drift
   "rationale": "max 80 words: the main bets and why",
   "response_to_risk": "max 50 words, only if responding to a Risk Manager rejection, else empty string",
   "trade_notes": {"<TICKER you add or exit>": {"thesis": "max 25 words", "invalidation": "max 20 words", "invalidation_px": number}},
-  "invalidation_responses": {"<TICKER in invalidated_holdings>": "exit|hold: reason, max 25 words"}
+  "invalidation_responses": {"<TICKER in invalidated_holdings>": "exit|hold: reason, max 25 words"},
+  "soft_hedge": number 0..0.10 (optional, only when "soft_hedge" is open in the brief: the SPXU weight you want; 0 = none)
 }
 (trade_notes and invalidation_responses are optional fields; da_responses is required when "devils_advocate" is in the brief:
   "da_responses": {"<TICKER>": "proceed|downsize|drop: answer to the objection, max 30 words"})"""
@@ -59,6 +62,11 @@ Sentiment >= +0.7 and Quant >= 5/10, max 10% NAV). "pead" is post-earnings drift
             "quant_model_reliability": ctx["quant"].get("model_reliability"),
             "current_portfolio_weights": {t: round(w, 3) for t, w in ctx["current_weights"].items()},
         }
+        if ctx.get("soft_hedge_open"):
+            brief["soft_hedge"] = {"open": True, "ticker": config.SOFT_HEDGE["ticker"], "max": config.SOFT_HEDGE["max"],
+                                   "risk_off_signals": ctx.get("soft_hedge_signals"),
+                                   "proposals": {"quant": (ctx.get("quant") or {}).get("hedge_proposal"),
+                                                 "macro": (ctx.get("macro_view") or {}).get("hedge_proposal")}}
         if ctx.get("lessons"):
             brief["lessons"] = ctx["lessons"]
         if ctx.get("track_record", {}).get("calls"):
@@ -105,6 +113,7 @@ Sentiment >= +0.7 and Quant >= 5/10, max 10% NAV). "pead" is post-earnings drift
     def validate(self, out, ctx):
         src = out.get("convictions") or {}
         held = set(ctx["current_weights"])
+        hedge = round(clip(out.get("soft_hedge"), 0.0, config.SOFT_HEDGE["max"], 0.0), 3) if ctx.get("soft_hedge_open") else 0.0
         conv = {}
         for t, c in ctx["composite"].items():
             v = clip(src.get(t, 2 * c["composite"]))
@@ -112,6 +121,8 @@ Sentiment >= +0.7 and Quant >= 5/10, max 10% NAV). "pead" is post-earnings drift
                 v = -1.0                      # IPS C2.7: no new position without the data
             if ctx["mode"] == "daily" and t not in held and t not in ctx["eligible_new"]:
                 v = -1.0                      # IPS C5.3 entry rule enforced in code
+            if t == config.SOFT_HEDGE["ticker"] and ctx.get("soft_hedge_open"):
+                v = 0.5 if hedge > 0 else (-1.0 if t not in held else v)   # the soft hedge is sized by `soft_hedge`, not by the entry rule
             if t in ctx["forced_exits"]:
                 v = -1.0
             conv[t] = round(v, 2)
@@ -129,7 +140,7 @@ Sentiment >= +0.7 and Quant >= 5/10, max 10% NAV). "pead" is post-earnings drift
             if t in ctx["composite"] and isinstance(n, dict):
                 notes[t] = {"thesis": str(n.get("thesis", ""))[:250], "invalidation": str(n.get("invalidation", ""))[:200],
                             "invalidation_px": n.get("invalidation_px")}
-        return {"convictions": conv,
+        return {"convictions": conv, "soft_hedge": hedge,
                 "equity_exposure": round(clip(out.get("equity_exposure"), 1 - config.RISK_LIMITS["max_cash_weight"], 1.0,
                                               ctx["macro_view"]["equity_exposure_target"]), 3),
                 "rationale": str(out.get("rationale", ""))[:700],

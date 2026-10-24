@@ -108,7 +108,7 @@ def industry_momentum(f: pd.DataFrame, meta: pd.DataFrame) -> pd.Series:
 
 
 def screen(universe: pd.DataFrame, market: dict, holdings: list[str] | None = None,
-           regime: str = "neutral", stage2_inputs=None) -> dict:
+           regime: str = "neutral", stage2_inputs=None, with_inverse: bool = False) -> dict:
     """stage2_inputs(tickers) -> {ticker: {"revisions": float|None, "drift": float|None, "quality": float|None}}.
     Returns {'shortlist', 'table', 'funnel', 'excluded'}."""
     S = config.SCREEN
@@ -163,7 +163,8 @@ def screen(universe: pd.DataFrame, market: dict, holdings: list[str] | None = No
 
     lev = f.index[f["asset_type"] == "leveraged_etf"].tolist()
     inv = f.index[f["asset_type"] == "inverse_etf"].tolist()
-    etfs = lev + (inv if regime == "risk_off" else [])   # inverse only in risk-off (IPS A11)
+    soft = [t for t in inv if t == config.SOFT_HEDGE["ticker"]] if with_inverse else []   # Oct 24 soft hedge: SPXU only
+    etfs = lev + (inv if regime == "risk_off" else soft)   # inverse only in risk-off (IPS A11) or the soft-hedge window
     held_ok = [h for h in holdings if h in close.columns]
     shortlist = list(dict.fromkeys(top + held_ok + etfs))
 

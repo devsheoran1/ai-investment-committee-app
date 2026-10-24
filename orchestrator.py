@@ -140,7 +140,9 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
                       "quality": float(_np.mean(q)) if q else None}
         return out
 
-    scr = screener.screen(universe, market, holdings, regime, stage2_inputs=stage2_inputs)
+    # Oct 24 soft hedge: ONE C1.3 risk-off signal (short of full risk-off) opens a 0-10% SPXU window the PM may use
+    soft_hedge_open = bool(config.SOFT_HEDGE["enabled"] and reg.get("lev_buy_block") and regime != "risk_off")
+    scr = screener.screen(universe, market, holdings, regime, stage2_inputs=stage2_inputs, with_inverse=soft_hedge_open)
     emit("screen", f"Funnel: {scr['funnel']}")
     bad = _preflight(close, scr["shortlist"])
     untradeable = {t: r for t, r in bad.items() if t in holdings}
@@ -258,6 +260,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
                              for t, e in earnings.items() if e.get("reports_soon") and t in shortlist + holdings},
            "tickers": shortlist, "stocks": stocks, "sectors": sectors, "asset_types": asset_types,
            "fundamentals": fundamentals, "research_flags": flags, "news": news, "macro": macro,
+           "soft_hedge_open": soft_hedge_open, "soft_hedge_signals": reg.get("lev_buy_block") or [],
            "regime_info": regime_info, "regime_rules": rules, "rule_tilts": analytics.sector_tilts(macro),
            "technicals": tech, "forecast": fc, "race": race, "current_weights": current_w, "mode": mode,
            "limits": config.RISK_LIMITS}
@@ -331,7 +334,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
                 forced[t] = "leveraged long in risk-off (IPS C5.4)"
             elif kind == "leveraged_etf" and dd_state["level"] == "hard":
                 forced[t] = f"fund drawdown {drawdown:.1%} at/below {config.DD_HARD:.0%}: all leveraged longs out (IPS A4/C11)"
-            elif kind == "inverse_etf" and regime != "risk_off":
+            elif kind == "inverse_etf" and regime != "risk_off" and not soft_hedge_open:
                 forced[t] = "inverse hedge no longer needed: regime left risk-off (IPS A11)"
         forced.update({t: r for t, r in (extra_forced or {}).items() if t in positions})   # intraday news veto (C4.5)
         forced = {t: r for t, r in forced.items() if t not in untradeable}
@@ -342,7 +345,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         best_unheld = comp[unheld[0]]["composite_10"] if unheld else 0
         eligible_new = [] if no_new_trades else [
             t for t in unheld
-            if comp[t]["composite_10"] >= 7 and (comp[t]["quant"] or 0) >= 0.2 and rank[t] <= 10
+            if comp[t]["composite_10"] >= config.ENTRY_COMPOSITE and (comp[t]["quant"] or 0) >= 0.2 and rank[t] <= 10
             and comp[t]["composite_10"] >= weakest + 1 and not comp[t]["insufficient_data"]
             and _votes_ok(ctx["quant"]["signals"].get(t))
             and not (asset_types.get(t) == "leveraged_etf" and dd_state["no_new_leveraged"])]
@@ -389,12 +392,15 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
             lev_lim = min(x for x in (lev_override, dd_lev, 1.0) if x is not None)
             if target is None:
                 conv = analytics.vol_managed(pm["convictions"], close, asset_types)
+                soft = float(pm.get("soft_hedge") or 0.0) if soft_hedge_open else 0.0
+                if soft > 0:
+                    conv[config.SOFT_HEDGE["ticker"]] = max(conv.get(config.SOFT_HEDGE["ticker"], 0.0), 0.5)
                 target = analytics.optimise(conv, close, sectors, asset_types, pm["equity_exposure"],
                                             regime, macro["vix_level"], max_names, risk_aversion=risk_aversion,
                                             lev_cap_override=lev_lim,
                                             min_weight=max(0.01, config.MIN_TRADE_NOTIONAL / nav * 1.05),
                                             ensure_min=init_mode, caps=caps,
-                                            inverse_min=dd_state["inverse_min_risk_off"])
+                                            inverse_min=dd_state["inverse_min_risk_off"], soft_inverse=soft)
             if not init_mode:   # held names the PM didn't exit stay at their weight unless resized
                 for t, w in current_w.items():
                     if (t not in target and pm["convictions"].get(t, 0) > -0.5 and t not in forced
@@ -413,7 +419,8 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
             # Prof. Manero rule 3: the Risk Manager checks the book that will ACTUALLY exist after the
             # 5-trade cap, the $25k minimum and the cash upsizing. A breach here = re-plan, never execute.
             rr = RiskManager.check_book(post, close, sectors, asset_types, regime, nav_drawdown=drawdown, adv=adv,
-                                        nav=nav, caps=caps, dd_state=dd_state, current_weights=current_w)
+                                        nav=nav, caps=caps, dd_state=dd_state, current_weights=current_w,
+                                        soft_hedge_open=soft_hedge_open)
             return target, orders, skipped, rr, post
 
         risk_feedback, prev = None, None
@@ -497,7 +504,8 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         if orders and needs_risk_recheck(risk_checked, orders):
             post_chk = _post_trade_weights(positions, cash, orders, last_px)
             rr2 = RiskManager.check_book(post_chk, close, sectors, asset_types, regime, nav_drawdown=drawdown, adv=adv,
-                                         nav=nav, caps=caps, dd_state=dd_state, current_weights=current_w)
+                                         nav=nav, caps=caps, dd_state=dd_state, current_weights=current_w,
+                                        soft_hedge_open=soft_hedge_open)
             ok2 = not rr2["breaches"]
             db.log_message(run_id, "Risk Manager", "Chief Risk Officer — re-check after CIO change", "rules",
                            "risk_recheck", 0, {"decision": "approve" if ok2 else "reject", "hard_breaches": rr2["breaches"],
@@ -859,7 +867,7 @@ def _votes_ok(sig: dict | None) -> bool:
 
 
 def _trailing_stop(pos: dict, px: float, series) -> str | None:
-    """Exit reason if the price is >= 8% below its peak since entry (entry cost, closes since the open date, live price)."""
+    """Exit reason if the price is beyond config.TRAILING_STOP below its peak since entry (entry cost, closes since the open date, live price)."""
     since = None
     if series is not None:
         since = series.loc[series.index >= str(pos.get("opened_date") or "9999")].dropna().values
