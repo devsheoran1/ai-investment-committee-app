@@ -43,10 +43,50 @@ def load_prices(refresh: bool = False) -> dict[str, pd.DataFrame]:
     return out
 
 
-def _one_earnings(t: str):
+LONG_PKL = os.path.join(CACHE, "prices_long.pkl")
+EARN_LONG_PKL = os.path.join(CACHE, "earnings_history_long.pkl")
+SECTOR_ETFS = ["XLB", "XLE", "XLF", "XLI", "XLK", "XLP", "XLU", "XLV", "XLY"]      # the 9 original SPDRs (Dec 1998)
+DOTCOM_PKL = os.path.join(CACHE, "sector_etf_1998.pkl")
+LONG_START = "2016-06-01"
+
+
+def _dl(tickers, start, end=None):
+    import yfinance as yf
+    raw = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False, threads=True, group_by="column")
+    return prices._split(raw, tickers)
+
+
+def load_prices_long(refresh: bool = False) -> dict[str, pd.DataFrame]:
+    """2016-06 -> today (2018-01 start + 252d warm-up + 60 sessions of IC). Survivorship: today's constituents only."""
+    if os.path.exists(LONG_PKL) and not refresh:
+        return pd.read_pickle(LONG_PKL)
+    u = universe_frame()
+    tickers = list(dict.fromkeys(u["symbol"].tolist() + BENCH + SECTOR_ETFS + ["XLRE", "XLC"]))
+    fields = {k: pd.DataFrame() for k in ("open", "high", "low", "close", "volume")}
+    for i in range(0, len(tickers), 60):
+        part = _dl(tickers[i:i + 60], LONG_START)
+        for k, v in part.items():
+            fields[k] = v if fields[k].empty else fields[k].join(v, how="outer")
+        time.sleep(1.0)
+    idx = fields["close"]["SPY"].dropna().index
+    out = {k: v.reindex(idx).sort_index() for k, v in fields.items()}
+    pd.to_pickle(out, LONG_PKL)
+    return out
+
+
+def load_dotcom(refresh: bool = False) -> pd.DataFrame:
+    """Close and open of the 9 SPDRs + SPY, 1998-12 -> 2004-12. No delisted stocks exist in this feed."""
+    if os.path.exists(DOTCOM_PKL) and not refresh:
+        return pd.read_pickle(DOTCOM_PKL)
+    f = _dl(SECTOR_ETFS + ["SPY"], "1998-12-01", "2004-12-31")
+    pd.to_pickle(f, DOTCOM_PKL)
+    return f
+
+
+def _one_earnings(t: str, limit: int = 24):
     try:
         import yfinance as yf
-        ed = yf.Ticker(t).get_earnings_dates(limit=24)
+        ed = yf.Ticker(t).get_earnings_dates(limit=limit)
         if ed is None or not len(ed):
             return t, []
         ed = ed.dropna(subset=["Reported EPS"])
@@ -56,19 +96,20 @@ def _one_earnings(t: str):
         return t, None
 
 
-def load_earnings(tickers: list[str], budget_s: float = 900.0) -> dict[str, list]:
-    """Resumable: tickers already fetched are kept; failures are retried on the next call."""
-    have: dict = pd.read_pickle(EARN_PKL) if os.path.exists(EARN_PKL) else {}
+def load_earnings(tickers: list[str], budget_s: float = 900.0, long: bool = False) -> dict[str, list]:
+    """Resumable: tickers already fetched are kept; failures are retried on the next call. long=True: up to 100 quarters."""
+    pkl = EARN_LONG_PKL if long else EARN_PKL
+    have: dict = pd.read_pickle(pkl) if os.path.exists(pkl) else {}
     todo = [t for t in tickers if have.get(t) is None]
     t0 = time.time()
     for i in range(0, len(todo), 30):
         if time.time() - t0 > budget_s:
             break
         with ThreadPoolExecutor(max_workers=4) as ex:
-            for t, r in ex.map(_one_earnings, todo[i:i + 30]):
+            for t, r in ex.map(lambda x: _one_earnings(x, 100 if long else 24), todo[i:i + 30]):
                 if r is not None:
                     have[t] = r
-        pd.to_pickle(have, EARN_PKL)
+        pd.to_pickle(have, pkl)
         time.sleep(1.0)
     return {t: v for t, v in have.items() if v is not None}
 

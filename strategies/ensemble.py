@@ -99,6 +99,13 @@ def learn_weights(d: Data, strategies: list[Strategy], panels: dict[str, pd.Data
     return {"weights": weights, "table": table, "mode": mode, "allocated": round(sum(weights.values()), 4)}
 
 
+def family_of(name: str) -> str | None:
+    for fam, members in config.STRATEGY_FAMILIES.items():
+        if name in members:
+            return fam
+    return None
+
+
 def weight_caps(has_history: dict[str, bool], cfg: dict) -> dict[str, float]:
     """Per-strategy cap: PEAD 30% (family_caps), snapshot-only signals 5%, everything else 20%."""
     return {k: (cfg["family_caps"].get(k, cfg["weight_cap"]) if h else min(cfg["snapshot_cap"], cfg["weight_cap"]))
@@ -116,13 +123,20 @@ def weights_from_table(table: dict, has_history: dict[str, bool], cfg: dict | No
             for k in names if not has_history[k]}
     hist = [k for k in names if has_history[k]]
     # equal prior + lambda x max(t, 0): a strategy with a validated positive t gets more say, nobody ever gets zero
-    raw = {k: 1.0 + cfg["shrink_lambda"] * max((table[k]["t"] or 0.0) if table[k]["validated"] else 0.0, 0.0) for k in hist}
+    prior = {k: 1.0 for k in hist}
+    fp = cfg.get("family_prior")                       # Oct 24 weight search: optional family-level prior (None = equal prior)
+    if fp:
+        cnt: dict = {}
+        for k in hist:
+            cnt[family_of(k)] = cnt.get(family_of(k), 0) + 1
+        prior = {k: fp.get(family_of(k) or "other", 0.0) / cnt[family_of(k)] * len(hist) for k in hist}
+    raw = {k: prior[k] * (1.0 + cfg["shrink_lambda"] * max((table[k]["t"] or 0.0) if table[k]["validated"] else 0.0, 0.0)) for k in hist}
     mass = 1.0 - sum(snap.values())
     tot = sum(raw.values()) or 1.0
     w = {k: mass * v / tot for k, v in raw.items()}
     w.update(snap)
     weights = cap_weights(w, cfg["weight_cap"], receivers=set(hist), caps=weight_caps(has_history, cfg))
-    up = [k for k in hist if raw[k] > 1.0]
+    up = [k for k in hist if raw[k] > prior[k]]
     mode = (f"shrinkage weights: equal prior + {cfg['shrink_lambda']:g} x max(t, 0) ({len(up)}/{len(hist)} strategies above the prior, "
             f"caps {cfg['weight_cap']:.0%}, PEAD {cfg['family_caps'].get('pead_sue', cfg['weight_cap']):.0%}); "
             f"{len(snap)} snapshot-only at {cfg['snapshot_prior']:g} x 1/N, cap {cfg['snapshot_cap']:.0%}")

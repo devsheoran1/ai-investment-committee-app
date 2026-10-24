@@ -212,7 +212,20 @@ REPLAY = {"db": os.path.join(_HERE, "finance_replay.db"), "trades_csv": os.path.
           "fill_time_madrid": "15:30"}
 
 # How the composite blends analyst scores (IPS C5.2, must sum to 1)
-SIGNAL_WEIGHTS = {"quant": 0.40, "sentiment": 0.30, "research": 0.15, "macro": 0.15}
+# Oct 24: configurable (FUND_SIGNAL_BLEND=<preset>). Default stays "current": the alternatives are a TEAM DECISION (C5.2), not applied.
+# Every preset is scored daily on live data (blends.py -> reports/blend_log.csv), scoring only, no trades.
+SIGNAL_BLENDS = {
+    "current":        {"quant": 0.40, "sentiment": 0.30, "research": 0.15, "macro": 0.15},
+    "quant_heavy":    {"quant": 0.50, "sentiment": 0.20, "research": 0.15, "macro": 0.15},
+    "fundamental":    {"quant": 0.30, "sentiment": 0.20, "research": 0.25, "macro": 0.25},
+    "even_three":     {"quant": 0.40, "sentiment": 0.20, "research": 0.20, "macro": 0.20},
+    "quant_research": {"quant": 0.45, "sentiment": 0.15, "research": 0.25, "macro": 0.15},   # sentiment is the noisiest 15-day input
+    "macro_light":    {"quant": 0.45, "sentiment": 0.25, "research": 0.25, "macro": 0.05},   # Macro is only a +-0.67 sector tilt
+    "equal":          {"quant": 0.25, "sentiment": 0.25, "research": 0.25, "macro": 0.25},
+}
+SIGNAL_BLEND = os.getenv("FUND_SIGNAL_BLEND", "current")
+SIGNAL_WEIGHTS = SIGNAL_BLENDS[SIGNAL_BLEND]
+BLEND_LOG = os.getenv("FUND_BLEND_LOG", os.path.join(_HERE, "reports", "blend_log.csv"))
 
 # --------------------------------------------------------------------------- #
 # Deep learning model
@@ -250,6 +263,7 @@ ENSEMBLE = {
                                    # Oct 24: 0.75 -> 1.0 (Quant = 100% ensemble). Chosen AFTER seeing the 2023-26 backtest
                                    # (in-sample, not significant); the legacy score only survives as the fallback and tracker
     "weight_mode": "shrinkage",    # "shrinkage": w ~ 1 + shrink_lambda x max(t, 0), never all-zero | "ic_legacy": the Oct 23 rule
+    "family_prior": None,          # None = equal prior per strategy; else {"momentum": .4, "earnings": .2, "reversal": .2, "defensive": .2, "other": 0}
     "shrink_lambda": 0.5,          # a validated strategy with t = 2 gets 2x the equal prior, t = 4 gets 3x (before the caps)
     "ic_sessions": 60,             # rolling window of out-of-sample ICs (5-day forward return)
     "ic_horizon": 5,

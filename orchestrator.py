@@ -24,6 +24,7 @@ import os
 import pandas as pd
 
 import analytics
+import blends
 import strategies.live as strat_live
 import config
 import data
@@ -318,6 +319,11 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
             for t in comp:
                 comp[t]["quant_fallback"] = ctx["quant"]["quant_fallback"]
         ctx["composite"] = comp
+        try:                                    # Oct 24: score-only log of every candidate blend's top 10 (no trades, no UI)
+            blends.score(close)
+            blends.log_run(comp, str(close.index[-1].date()))
+        except Exception:  # noqa: BLE001
+            pass
         ranked = sorted(comp, key=lambda t: -comp[t]["composite"])
         rank = {t: i + 1 for i, t in enumerate(ranked)}
 

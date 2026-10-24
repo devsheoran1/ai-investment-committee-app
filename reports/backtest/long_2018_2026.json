@@ -1,0 +1,246 @@
+{
+ "periods": {
+  "2018 Q4": {
+   "N0 old deployed (IC weights, blend 0.75, -8% trail)": {
+    "Return": -0.11301439230916593,
+    "Sharpe": -2.456218552524812,
+    "MaxDD": -0.15275242337736028,
+    "SharpeRange": [
+     -2.9538875830580165,
+     -1.9585495219916074
+    ]
+   },
+   "N1 new (shrinkage, 100% ensemble, -12% trail)": {
+    "Return": -0.14368836030719873,
+    "Sharpe": -2.707408908253351,
+    "MaxDD": -0.18480493698610584,
+    "SharpeRange": [
+     -2.79664392388019,
+     -2.6181738926265115
+    ]
+   },
+   "N2 new + regime allocator": {
+    "Return": -0.15716292941699894,
+    "Sharpe": -3.083342714228585,
+    "MaxDD": -0.20120488625837968,
+    "SharpeRange": [
+     -3.1757164121631347,
+     -2.9909690162940357
+    ]
+   },
+   "SPY buy&hold": {
+    "Return": -0.1383149782683467,
+    "Sharpe": -2.416656629800015,
+    "MaxDD": -0.19203250533224658,
+    "SharpeRange": null
+   },
+   "MTUM buy&hold": {
+    "Return": -0.15887823386315203,
+    "Sharpe": -2.1581011112999504,
+    "MaxDD": -0.22122996422257402,
+    "SharpeRange": null
+   },
+   "RSP buy&hold": {
+    "Return": -0.13912952851036342,
+    "Sharpe": -2.7034664387421503,
+    "MaxDD": -0.1882010793974036,
+    "SharpeRange": null
+   }
+  },
+  "2020 Feb-Jun": {
+   "N0 old deployed (IC weights, blend 0.75, -8% trail)": {
+    "Return": -0.09117154058814636,
+    "Sharpe": -0.4681933487027635,
+    "MaxDD": -0.295212786399499,
+    "SharpeRange": [
+     -0.5603152089830269,
+     -0.3760714884225001
+    ]
+   },
+   "N1 new (shrinkage, 100% ensemble, -12% trail)": {
+    "Return": -0.08197628109482208,
+    "Sharpe": -0.35785519732762533,
+    "MaxDD": -0.3457360843796809,
+    "SharpeRange": [
+     -0.5503719774970738,
+     -0.16533841715817685
+    ]
+   },
+   "N2 new + regime allocator": {
+    "Return": 0.010872629245716081,
+    "Sharpe": 0.24486302835949691,
+    "MaxDD": -0.32836293450488113,
+    "SharpeRange": [
+     -0.10848259523756419,
+     0.598208651956558
+    ]
+   },
+   "SPY buy&hold": {
+    "Return": -0.03881847172408315,
+    "Sharpe": 0.046205264893813824,
+    "MaxDD": -0.33717252250853624,
+    "SharpeRange": null
+   },
+   "MTUM buy&hold": {
+    "Return": 0.0034415000734677736,
+    "Sharpe": 0.26710177815211145,
+    "MaxDD": -0.3408229898384195,
+    "SharpeRange": null
+   },
+   "RSP buy&hold": {
+    "Return": -0.09724090130622332,
+    "Sharpe": -0.17531197905943371,
+    "MaxDD": -0.3904130121930828,
+    "SharpeRange": null
+   }
+  },
+  "2022": {
+   "N0 old deployed (IC weights, blend 0.75, -8% trail)": {
+    "Return": -0.07350759801430501,
+    "Sharpe": -0.2868011794539794,
+    "MaxDD": -0.19538228566547933,
+    "SharpeRange": [
+     -0.3927143272052984,
+     -0.18088803170266043
+    ]
+   },
+   "N1 new (shrinkage, 100% ensemble, -12% trail)": {
+    "Return": -0.06755415464399372,
+    "Sharpe": -0.28412450381983784,
+    "MaxDD": -0.1910553445285335,
+    "SharpeRange": [
+     -0.3257687699088383,
+     -0.24248023773083735
+    ]
+   },
+   "N2 new + regime allocator": {
+    "Return": -0.10713142619769506,
+    "Sharpe": -0.5012239345011886,
+    "MaxDD": -0.2201254128091895,
+    "SharpeRange": [
+     -0.6865676435020706,
+     -0.31588022550030675
+    ]
+   },
+   "SPY buy&hold": {
+    "Return": -0.18646401431825999,
+    "Sharpe": -0.7352912022474767,
+    "MaxDD": -0.24496382047506826,
+    "SharpeRange": null
+   },
+   "MTUM buy&hold": {
+    "Return": -0.18442832260828845,
+    "Sharpe": -0.694016443667871,
+    "MaxDD": -0.28171144389481617,
+    "SharpeRange": null
+   },
+   "RSP buy&hold": {
+    "Return": -0.1169298126104168,
+    "Sharpe": -0.43630452503379924,
+    "MaxDD": -0.2138438514349824,
+    "SharpeRange": null
+   }
+  },
+  "2023-26": {
+   "N0 old deployed (IC weights, blend 0.75, -8% trail)": {
+    "Return": 0.7622448375870967,
+    "Sharpe": 1.0012191060006466,
+    "MaxDD": -0.17428068612780473,
+    "SharpeRange": [
+     0.8501832040480334,
+     1.1522550079532596
+    ]
+   },
+   "N1 new (shrinkage, 100% ensemble, -12% trail)": {
+    "Return": 0.49933744094439325,
+    "Sharpe": 0.8144391064700206,
+    "MaxDD": -0.18415435801152025,
+    "SharpeRange": [
+     0.7943931684933924,
+     0.8344850444466488
+    ]
+   },
+   "N2 new + regime allocator": {
+    "Return": 0.22510990385646912,
+    "Sharpe": 0.44514879795309414,
+    "MaxDD": -0.19512248810696814,
+    "SharpeRange": [
+     0.37325190130486124,
+     0.517045694601327
+    ]
+   },
+   "SPY buy&hold": {
+    "Return": 1.092244025693672,
+    "Sharpe": 1.3851382099137588,
+    "MaxDD": -0.18755237333914387,
+    "SharpeRange": null
+   },
+   "MTUM buy&hold": {
+    "Return": 1.090302856731678,
+    "Sharpe": 1.0164971216232697,
+    "MaxDD": -0.20992003212035748,
+    "SharpeRange": null
+   },
+   "RSP buy&hold": {
+    "Return": 0.6329725439186376,
+    "Sharpe": 1.0006042045219212,
+    "MaxDD": -0.178095476396409,
+    "SharpeRange": null
+   }
+  },
+  "Full 2018-26": {
+   "N0 old deployed (IC weights, blend 0.75, -8% trail)": {
+    "Return": 1.6180502358812014,
+    "Sharpe": 0.6904531526855009,
+    "MaxDD": -0.295212786399499,
+    "SharpeRange": [
+     0.6061920527051738,
+     0.774714252665828
+    ]
+   },
+   "N1 new (shrinkage, 100% ensemble, -12% trail)": {
+    "Return": 1.2733163785477808,
+    "Sharpe": 0.6338220073934898,
+    "MaxDD": -0.3457360843796809,
+    "SharpeRange": [
+     0.6070876971509817,
+     0.660556317635998
+    ]
+   },
+   "N2 new + regime allocator": {
+    "Return": 0.8127785453425009,
+    "Sharpe": 0.4784327024222154,
+    "MaxDD": -0.32836293450488113,
+    "SharpeRange": [
+     0.43235603467285433,
+     0.5245093701715765
+    ]
+   },
+   "SPY buy&hold": {
+    "Return": 2.2288334469893645,
+    "Sharpe": 0.799181397893808,
+    "MaxDD": -0.33717252250853624,
+    "SharpeRange": null
+   },
+   "MTUM buy&hold": {
+    "Return": 2.0725411680174726,
+    "Sharpe": 0.6685913785855258,
+    "MaxDD": -0.3408229898384195,
+    "SharpeRange": null
+   },
+   "RSP buy&hold": {
+    "Return": 1.479034964188397,
+    "Sharpe": 0.6332814833405507,
+    "MaxDD": -0.3904130121930828,
+    "SharpeRange": null
+   }
+  }
+ },
+ "state_share": {
+  "calm_uptrend": 0.489,
+  "normal": 0.254,
+  "drawdown_high_vol": 0.242,
+  "rebound": 0.015
+ },
+ "seconds": 46.36564087867737
+}

@@ -20,11 +20,7 @@ from .ensemble import reweight
 STATES = ("calm_uptrend", "drawdown_high_vol", "rebound", "normal")
 
 
-def family_of(name: str) -> str | None:
-    for fam, members in config.STRATEGY_FAMILIES.items():
-        if name in members:
-            return fam
-    return None
+from .ensemble import family_of  # noqa: E402,F401  (single definition, shared with the weight rule)
 
 
 def regime_states(spy: pd.Series) -> pd.Series:

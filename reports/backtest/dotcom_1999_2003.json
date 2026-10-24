@@ -1,0 +1,189 @@
+{
+ "windows": {
+  "1999-2003": {
+   "S1 sector ETFs: ensemble top-3, no allocator": {
+    "CAGR": 0.05813910470116346,
+    "Vol": 0.19305889692991682,
+    "Sharpe": 0.38943743537855285,
+    "MaxDD": -0.32646255080226927,
+    "Total": 0.32564807731981316
+   },
+   "S2 + regime allocator": {
+    "CAGR": 0.02724077042913886,
+    "Vol": 0.18888060478357843,
+    "Sharpe": 0.23685778975078825,
+    "MaxDD": -0.4124972109660242,
+    "Total": 0.1434717055943302
+   },
+   "S3 + C1.3 soft hedge (no allocator)": {
+    "CAGR": 0.05170901634338576,
+    "Vol": 0.15490971755983332,
+    "Sharpe": 0.40317324115465664,
+    "MaxDD": -0.26808855084241545,
+    "Total": 0.28594742031634257
+   },
+   "S4 + allocator + C1.3 soft hedge": {
+    "CAGR": 0.021324836873736208,
+    "Vol": 0.15469427039039785,
+    "Sharpe": 0.21390368582245542,
+    "MaxDD": -0.3989791768432821,
+    "Total": 0.1109968736685838
+   },
+   "EW9 sector ETFs (rebalanced weekly)": {
+    "CAGR": 0.032586243085067634,
+    "Vol": 0.18890878813922937,
+    "Sharpe": 0.2642253429120126,
+    "MaxDD": -0.36272948081956635,
+    "Total": 0.17346361649877973
+   },
+   "SPY buy & hold": {
+    "CAGR": -0.007369480191249389,
+    "Vol": 0.21719225126175895,
+    "Sharpe": 0.07427215330291513,
+    "MaxDD": -0.4751584496029132,
+    "Total": -0.036225349750973024
+   }
+  },
+  "2000-03 (signals live)": {
+   "S1 sector ETFs: ensemble top-3, no allocator": {
+    "CAGR": 0.006108471005479954,
+    "Vol": 0.19671581336613644,
+    "Sharpe": 0.12928439420643598,
+    "MaxDD": -0.3264625508022686,
+    "Total": 0.024607425868187427
+   },
+   "S2 + regime allocator": {
+    "CAGR": -0.030706419655155193,
+    "Vol": 0.19156481835731906,
+    "Sharpe": -0.06729991588839274,
+    "MaxDD": -0.3999832944022357,
+    "Total": -0.11705714717067983
+   },
+   "S3 + C1.3 soft hedge (no allocator)": {
+    "CAGR": 0.011946542570953955,
+    "Vol": 0.1513438637648975,
+    "Sharpe": 0.15427138939734047,
+    "MaxDD": -0.21255725317350027,
+    "Total": 0.04854704753725447
+   },
+   "S4 + allocator + C1.3 soft hedge": {
+    "CAGR": -0.02443671521594426,
+    "Vol": 0.15086960577424283,
+    "Sharpe": -0.08876969904301418,
+    "MaxDD": -0.33574819644575615,
+    "Total": -0.0940378781920379
+   },
+   "EW9 sector ETFs (rebalanced weekly)": {
+    "CAGR": 0.0016645242569948149,
+    "Vol": 0.19657061261688388,
+    "Sharpe": 0.10661451263795789,
+    "MaxDD": -0.36272948081956624,
+    "Total": 0.006660987952555875
+   },
+   "SPY buy & hold": {
+    "CAGR": -0.05420470529503851,
+    "Vol": 0.22533220701556728,
+    "Sharpe": -0.13538724109899,
+    "MaxDD": -0.47515844960291254,
+    "Total": -0.19945197997828723
+   }
+  },
+  "Mar 2000-Oct 2002 (peak to trough)": {
+   "S1 sector ETFs: ensemble top-3, no allocator": {
+    "CAGR": -0.1251042881073472,
+    "Vol": 0.201035483246376,
+    "Sharpe": -0.5672517230460361,
+    "MaxDD": -0.3264625508022696,
+    "Total": -0.2881836752587573
+   },
+   "S2 + regime allocator": {
+    "CAGR": -0.17618577704631322,
+    "Vol": 0.19478359345138857,
+    "Sharpe": -0.9017211200023599,
+    "MaxDD": -0.3943160931334184,
+    "Total": -0.38917771916688715
+   },
+   "S3 + C1.3 soft hedge (no allocator)": {
+    "CAGR": -0.080418029847934,
+    "Vol": 0.14640786421026264,
+    "Sharpe": -0.5019517701316583,
+    "MaxDD": -0.19930014557996878,
+    "Total": -0.19203297442486245
+   },
+   "S4 + allocator + C1.3 soft hedge": {
+    "CAGR": -0.13388795979461388,
+    "Vol": 0.14547519115475194,
+    "Sharpe": -0.9194297660737456,
+    "MaxDD": -0.3160975044509804,
+    "Total": -0.3062197250070102
+   },
+   "EW9 sector ETFs (rebalanced weekly)": {
+    "CAGR": -0.13409442784857606,
+    "Vol": 0.2037371378008185,
+    "Sharpe": -0.6079637786994095,
+    "MaxDD": -0.362729480819567,
+    "Total": -0.30664030278800136
+   },
+   "SPY buy & hold": {
+    "CAGR": -0.222078758349314,
+    "Vol": 0.23582564720040997,
+    "Sharpe": -0.9516156484512548,
+    "MaxDD": -0.47515844960291287,
+    "Total": -0.47204273598751156
+   }
+  }
+ },
+ "years": {
+  "1999": {
+   "S1 sector ETFs: ensemble top-3, no allocator": 0.2938107257972886,
+   "S2 + regime allocator": 0.29506876003375315,
+   "S3 + C1.3 soft hedge (no allocator)": 0.22640888965037087,
+   "S4 + allocator + C1.3 soft hedge": 0.2263171350381077,
+   "EW9 sector ETFs (rebalanced weekly)": 0.1656989101022801,
+   "SPY buy & hold": 0.20389361555461405
+  },
+  "2000": {
+   "S1 sector ETFs: ensemble top-3, no allocator": 0.10412057441299516,
+   "S2 + regime allocator": -0.04219600002552282,
+   "S3 + C1.3 soft hedge (no allocator)": 0.01651335327657133,
+   "S4 + allocator + C1.3 soft hedge": -0.11136212623627406,
+   "EW9 sector ETFs (rebalanced weekly)": 0.01992535790868799,
+   "SPY buy & hold": -0.09741557833173453
+  },
+  "2001": {
+   "S1 sector ETFs: ensemble top-3, no allocator": -0.11586914119004577,
+   "S2 + regime allocator": -0.14919945818625557,
+   "S3 + C1.3 soft hedge (no allocator)": -0.09750519002887448,
+   "S4 + allocator + C1.3 soft hedge": -0.13022548256619515,
+   "EW9 sector ETFs (rebalanced weekly)": -0.06442991170499601,
+   "SPY buy & hold": -0.11758532102523256
+  },
+  "2002": {
+   "S1 sector ETFs: ensemble top-3, no allocator": -0.1708919722438189,
+   "S2 + regime allocator": -0.1687557084404363,
+   "S3 + C1.3 soft hedge (no allocator)": -0.0954892845983577,
+   "S4 + allocator + C1.3 soft hedge": -0.09979050889385221,
+   "EW9 sector ETFs (rebalanced weekly)": -0.1794572054382425,
+   "SPY buy & hold": -0.21584590806375392
+  },
+  "2003": {
+   "S1 sector ETFs: ensemble top-3, no allocator": 0.2659405967385471,
+   "S2 + regime allocator": 0.30346542360293016,
+   "S3 + C1.3 soft hedge (no allocator)": 0.26361974785778886,
+   "S4 + allocator + C1.3 soft hedge": 0.3020718631791288,
+   "EW9 sector ETFs (rebalanced weekly)": 0.28569301469643205,
+   "SPY buy & hold": 0.2818151999845637
+  }
+ },
+ "regime_state_share": {
+  "calm_uptrend": 0.345,
+  "drawdown_high_vol": 0.325,
+  "normal": 0.219,
+  "rebound": 0.111
+ },
+ "c13_share": {
+  "0 signals": 0.4737261146496815,
+  "1 signal (soft-hedge window)": 0.31130573248407645,
+  ">=2 signals (risk-off)": 0.21496815286624205
+ }
+}
