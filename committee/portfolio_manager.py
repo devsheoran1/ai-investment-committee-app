@@ -1,6 +1,6 @@
 import config
 
-from .base import Agent, compact, clip
+from .base import Agent, compact, clip, scrub_refs
 
 
 class PortfolioManager(Agent):
@@ -140,11 +140,18 @@ Sentiment >= +0.7 and Quant >= 5/10, max 10% NAV). "pead" is post-earnings drift
             if t in ctx["composite"] and isinstance(n, dict):
                 notes[t] = {"thesis": str(n.get("thesis", ""))[:250], "invalidation": str(n.get("invalidation", ""))[:200],
                             "invalidation_px": n.get("invalidation_px")}
+        allowed = set(ctx["composite"]) | held                     # today's shortlist + book; anything else is stale memory
+        universe = set(ctx.get("names") or ()) | allowed
+        dropped = []
+        rationale, d1 = scrub_refs(str(out.get("rationale", ""))[:700], allowed, universe)
+        resp_risk, d2 = scrub_refs(str(out.get("response_to_risk", ""))[:400], allowed, universe)
+        dropped = sorted(set(d1 + d2))
         return {"convictions": conv, "soft_hedge": hedge,
                 "equity_exposure": round(clip(out.get("equity_exposure"), 1 - config.RISK_LIMITS["max_cash_weight"], 1.0,
                                               ctx["macro_view"]["equity_exposure_target"]), 3),
-                "rationale": str(out.get("rationale", ""))[:700],
-                "response_to_risk": str(out.get("response_to_risk", ""))[:400],
+                "rationale": rationale or ("[text removed: it referenced tickers outside today's shortlist and book]" if d1 else ""),
+                "response_to_risk": resp_risk,
+                **({"dropped_refs": dropped} if dropped else {}),
                 "trade_notes": notes, "invalidation_responses": responses,
                 "da_responses": {t: str((out.get("da_responses") or {}).get(t) or "NOT ANSWERED by the PM")[:240]
                                  for t in (ctx.get("da_objections") or {})}}

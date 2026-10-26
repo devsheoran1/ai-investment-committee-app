@@ -27,6 +27,8 @@ import analytics
 import blends
 import strategies.live as strat_live
 import config
+import copy
+import daycache
 import data
 import finbert
 import database as db
@@ -45,6 +47,14 @@ from llm import LLMClient
 
 class RunLimitError(RuntimeError):
     pass
+
+
+class RunBusyError(RunLimitError):
+    """Another committee run holds the run lock; the click is refused and uses no run slot."""
+
+
+class MarketClosedError(RunLimitError):
+    """Not an NYSE session: the committee only trades on trading days (analysis-only tools stay available)."""
 
 
 def _last_prices(close, tickers) -> dict[str, float]:
@@ -83,6 +93,24 @@ def _agent_provider(provider: str | None) -> str:
 
 def run_committee(provider: str | None = None, progress=None, execute: bool = False,
                   extra_forced: dict | None = None, _skip_run_limit: bool = False, asof=None) -> dict:
+    """One run at a time (DB lock) and only on NYSE sessions; the work itself is _run_committee."""
+    import nyse_calendar
+    live = asof is None and (provider or config.LLM_PROVIDER) != "mock"
+    if live and not _skip_run_limit and not nyse_calendar.is_trading_day(db.today()):
+        raise MarketClosedError(f"{db.today()} is not an NYSE trading day: no committee run (analysis-only tools still work).")
+    db.init_db()
+    if not db.acquire_run_lock():
+        raise RunBusyError(f"A committee run is already in progress ({db.run_in_progress()}): wait for it to finish. "
+                           "This click did not use a run slot.")
+    lock_db = db._DB["path"]
+    try:
+        return _run_committee(provider, progress, execute, extra_forced, _skip_run_limit, asof)
+    finally:
+        db.release_run_lock(lock_db)
+
+
+def _run_committee(provider: str | None = None, progress=None, execute: bool = False,
+                   extra_forced: dict | None = None, _skip_run_limit: bool = False, asof=None) -> dict:
     """asof (replay, IPS D6-D9): decide on data strictly BEFORE that date (previous close); news/brief n/a,
     fundamentals frozen (today's snapshot), estimate revisions dropped, Kronos skipped, lighter LSTM walk-forward."""
     replay = asof is not None
@@ -190,9 +218,15 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
     if replay:
         brief = {"text": "", "model": "replay: no Morning Brief (no historical headlines)", "tickers_in_play": []}
     else:
-        emit("brief", "Writing the Morning Brief")
-        brief = morning_brief.build({t: news.get(t, []) for t in holdings}, earnings, holdings, llm.provider)
+        cached_brief = daycache.get("brief", "day") if daycache.enabled(llm) else None
+        if cached_brief:
+            emit("brief", f"Morning Brief reused from run {cached_brief[1]}")
+            brief = {**cached_brief[0], "model": f"reused from run {cached_brief[1]}", "reused_from_run": cached_brief[1]}
+        else:
+            emit("brief", "Writing the Morning Brief")
+            brief = morning_brief.build({t: news.get(t, []) for t in holdings}, earnings, holdings, llm.provider)
     tech = analytics.technicals(close, shortlist)
+    underlying_tech = analytics.underlying_technicals(close, shortlist, asset_types)   # ETFs are scored on their index's signals
 
     emit("model", f"Training the LSTM on {len(shortlist)} shortlisted names")
     fc_cols = list(dict.fromkeys(shortlist + [config.BENCHMARK]))
@@ -228,6 +262,8 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
 
     run_id = db.start_run(llm.provider, data.DATA_SOURCE["prices"], mode)
     db.log_message(run_id, "Morning Brief", "Morning Brief (pre-open, C0.3)", brief["model"], "brief", 0, brief)
+    if daycache.enabled(llm, replay) and not brief.get("reused_from_run") and brief.get("text"):
+        daycache.put("brief", "day", run_id, brief)
     db.log_message(run_id, "System", "Screening funnel (IPS Part B)", "rules", "tools", 0,
                    {"universe_source": data.DATA_SOURCE["universe"], "funnel": scr["funnel"],
                     "shortlist": shortlist, "preflight_excluded": bad,
@@ -263,22 +299,55 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
            "fundamentals": fundamentals, "research_flags": flags, "news": news, "macro": macro,
            "soft_hedge_open": soft_hedge_open, "soft_hedge_signals": reg.get("lev_buy_block") or [],
            "regime_info": regime_info, "regime_rules": rules, "rule_tilts": analytics.sector_tilts(macro),
-           "technicals": tech, "forecast": fc, "race": race, "current_weights": current_w, "mode": mode,
+           "day_cache": daycache.enabled(llm, replay), "run_id": run_id,
+           "technicals": tech, "underlying_tech": underlying_tech, "forecast": fc, "race": race, "current_weights": current_w, "mode": mode,
            "limits": config.RISK_LIMITS}
     failed: list[str] = []
 
+    reused: dict[str, str] = {}
+
+    def _reuse(agent, stage, rnd, out, run_from, saved):
+        out = {**copy.deepcopy(out), "reused_from_run": run_from, "saved_tokens": saved}
+        reused[f"{agent.name}/{stage}/{rnd}"] = f"run {run_from} (~{saved} tokens)"
+        emit(stage, f"{agent.name}: reused from run {run_from}")
+        db.log_message(run_id, agent.name, agent.title, f"reused from run {run_from}", stage, rnd, out)
+        return out
+
     def call(agent_cls, stage, rnd=0, **extra):
         agent = agent_cls()
+        full = {**ctx, **extra}
+        key = None
+        if ctx["day_cache"] and agent_cls not in (EquityResearchAnalyst, SentimentAnalyst):
+            if agent_cls is MacroStrategist:                   # once a day; re-run only if VIX moved > 10% intraday
+                hit = daycache.get("macro", "day")
+                if hit and hit[0].get("vix") and abs(macro["vix_level"] / hit[0]["vix"] - 1) <= config.MACRO_REUSE_VIX_MOVE:
+                    try:       # the LLM text is reused; regime, tilts and limits are re-validated from today's rules
+                        out = agent.validate(json.loads(hit[0]["raw"]), full)
+                        return _reuse(agent, stage, rnd, out, hit[1], hit[0].get("tokens", 0))
+                    except Exception:  # noqa: BLE001
+                        pass
+            else:
+                key = daycache.h(agent.name, stage, rnd, agent.system_prompt, agent.build_prompt(full), (ctx.get("morning_brief") or "")[:900])
+                hit = daycache.get("agent", key)
+                if hit:
+                    return _reuse(agent, stage, rnd, hit[0]["out"], hit[1], hit[0].get("tokens", 0))
         emit(stage, f"{agent.name} is working…")
         try:
-            out, model = agent.run({**ctx, **extra}, llm)
+            out, model = agent.run(full, llm)
         except Exception as e:  # noqa: BLE001  IPS D11: a failed agent = neutral, never a crash
             failed.append(agent.name)
             out, model = agent.validate({}, {**ctx, **extra}), f"FAILED ({str(e)[:120]})"
             out["agent_failed"] = True
             out["fallback"] = FALLBACK_NOTE.get(agent.name, "neutral defaults")
             emit(stage, f"{agent.name} failed ({str(e)[:60]}) -> rules fallback")
-        db.log_message(run_id, agent.name, agent.title, model, stage, rnd, out, prompt=getattr(agent, "last_call", None))
+        lc = getattr(agent, "last_call", None)
+        db.log_message(run_id, agent.name, agent.title, model, stage, rnd, out, prompt=lc)
+        if ctx["day_cache"] and not out.get("agent_failed") and agent.name not in failed and lc:
+            tk = (lc or {}).get("tokens") or 0
+            if agent_cls is MacroStrategist:
+                daycache.put("macro", "day", run_id, {"vix": macro["vix_level"], "raw": lc.get("raw"), "tokens": tk})
+            elif key:
+                daycache.put("agent", key, run_id, {"out": out, "tokens": tk})
         return out
 
     try:
@@ -507,6 +576,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
 
         # Any change to the order list after Risk's verdict (CIO edit, rules fallback, forced-only cut) goes
         # back to Risk on the new post-trade book. A hard breach there = forced exits only.
+        recheck_breaches: list[str] = []
         if orders and needs_risk_recheck(risk_checked, orders):
             post_chk = _post_trade_weights(positions, cash, orders, last_px)
             rr2 = RiskManager.check_book(post_chk, close, sectors, asset_types, regime, nav_drawdown=drawdown, adv=adv,
@@ -520,6 +590,7 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
                                                "rationale": "Order list changed after Risk approval; re-checked the new book. "
                                                             + ("All hard limits pass." if ok2 else "Hard breach: forced exits only.")})
             if not ok2:
+                recheck_breaches = list(rr2["breaches"])
                 orders = [o for o in orders if o["forced"]]
 
         # ---------------------------------------------------------- 7. Trader -- #
@@ -556,8 +627,28 @@ def run_committee(provider: str | None = None, progress=None, execute: bool = Fa
         approved = trader["approved_orders"] if trader["execute"] else []
         status = "proposed" if approved else ("no_trade" if not nav_jump else "halted")
         summary = cio["committee_summary"]
+        no_trade_reason = ""
+        if not approved:                      # Oct 27 (run 5: CIO approved, status no_trade): always say why nothing is proposed
+            if recheck_breaches:
+                no_trade_reason = (f"the CIO's edits ({'; '.join(cio.get('applied_changes') or []) or 'drop/trim'}) broke a hard limit on "
+                                   f"Risk's re-check ({'; '.join(recheck_breaches)}), so only forced exits were kept (none today)")
+            elif cio["decision"] != "approve":
+                no_trade_reason = "the CIO rejected the proposal" + (" (insufficient information, IPS D12)" if no_new_trades else "")
+            elif nav_jump:
+                no_trade_reason = "kill switch: NAV jump halt"
+            elif skipped:
+                no_trade_reason = "the planner placed no order: " + "; ".join(f"{x['ticker']} {x['reason']}" for x in skipped[:4])
+            else:
+                no_trade_reason = "the target book equals the current book (nothing to rebalance)"
+            summary = f"{summary} NO TRADES: {no_trade_reason}."
+        tok = db.run_tokens(run_id)
+        prev = db.previous_run_tokens(run_id)
+        tok_info = {"tokens_this_run": tok, "calls": llm.usage.get("calls"), "reused": reused,
+                    "previous_run": {"run_id": prev[0], "tokens": prev[1]} if prev else None}
+        db.log_message(run_id, "System", "Token usage", "tools", "tokens", 0, tok_info)
+        emit("done", f"Tokens this run: {tok:,}" + (f" (run {prev[0]}: {prev[1]:,})" if prev else "") + f"; {len(reused)} agent call(s) reused")
         db.finish_run(run_id, status, summary, proposal={
-            "mode": mode, "orders": approved, "last_px": last_px, "regime": regime,
+            "mode": mode, "orders": approved, "last_px": last_px, "regime": regime, "no_trade_reason": no_trade_reason,
             "asof": str(close.index[-1].date()),
             "benchmark_px": last_px.get(config.BENCHMARK)})
         db.record_snapshot(run_id, last_px, last_px[config.BENCHMARK])

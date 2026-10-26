@@ -63,6 +63,13 @@ stated reason grounded in the data (e.g. oil up 10% in 5 days). Never force trad
             "regime": r["regime"],                       # rules decide, not the model
             "raw_regime": r["raw_regime"],
             "regime_note": r["note"],
+            "c13_signals": [{"signal": k, "tripped": bool(v), "value": (r.get("risk_off_values") or {}).get(k, "")}
+                            for k, v in (r.get("risk_off_signals") or {}).items()],
+            "inverse_gate": ("inverse ETFs allowed (A11): risk-off" if r["regime"] == "risk_off" else
+                             f"soft hedge open (<= {config.SOFT_HEDGE['max']:.0%} {config.SOFT_HEDGE['ticker']}): 1 of 2 risk-off signals tripped"
+                             if ctx.get("soft_hedge_open") else
+                             f"inverse ETFs closed: {r.get('n_risk_off', len(r.get('lev_buy_block') or []))}/4 risk-off signals tripped "
+                             "(1 opens the soft hedge, 2 = risk-off)"),
             "confidence": clip(out.get("confidence"), 0, 1, 0.5),
             "equity_exposure_target": rules["equity_exposure"],
             "max_leveraged": rules["max_leveraged"],

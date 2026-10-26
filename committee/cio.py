@@ -1,4 +1,4 @@
-from .base import Agent, as_map, compact
+from .base import Agent, as_map, compact, scrub_refs
 
 
 class ChiefInvestmentOfficer(Agent):
@@ -73,8 +73,19 @@ On any day, "drop" / "trim" only cut BUY orders; every change goes back to the R
         if ctx["risk_decision"]["decision"] != "approve" or ctx.get("no_new_trades"):
             d = "reject"    # CIO can't overrule a Risk veto
             why = "Risk veto / insufficient information: the CIO cannot approve"
-        summary = str(out.get("committee_summary", ""))[:900]
-        dissent = str(out.get("dissent_noted", ""))[:400]
+        # Oct 27: the minutes may only name held, proposed or ordered tickers (the CIO once cited names from an archived dry run)
+        allowed = set(ctx.get("current_weights") or {}) | {o["ticker"] for o in ctx.get("orders", [])} | \
+            {t for t, w in ((ctx.get("proposal") or {}).get("weights") or {}).items() if w > 0} | \
+            {i["ticker"] for i in ctx.get("invalidated", [])}
+        universe = set(ctx.get("names") or ()) | set(ctx.get("composite") or ()) | allowed
+        dropped: list[str] = []
+
+        def clean(x, n):
+            txt, bad = scrub_refs(str(x or "")[:n], allowed, universe)
+            dropped.extend(bad)
+            return txt
+        summary = clean(out.get("committee_summary"), 900)
+        dissent = clean(out.get("dissent_noted"), 400)
         if d != llm_d:      # minutes must match the decision: the LLM's text becomes recorded dissent
             dissent = (f"CIO recommended {llm_d.upper()} (overridden: {why}). {summary} {dissent}").strip()[:600]
             summary = f"Decision: {d.upper()} ({why})."
@@ -91,8 +102,11 @@ On any day, "drop" / "trim" only cut BUY orders; every change goes back to the R
             if t in buys and t not in drop and 0 < f < 1:
                 trim[t] = round(f, 2)
         key_risks = out.get("key_risks") if isinstance(out.get("key_risks"), list) else []
+        key_risks = [k for k in (clean(x, 150) for x in key_risks) if k]
+        msg = clean(out.get("message_to_team"), 300)
         return {"decision": d, "llm_decision": llm_d, "committee_summary": summary,
-                "key_risks": [str(x)[:150] for x in key_risks][:3],
+                "key_risks": key_risks[:3],
                 "dissent_noted": dissent,
-                "message_to_team": str(out.get("message_to_team", ""))[:300],
+                "message_to_team": msg,
+                **({"dropped_refs": sorted(set(dropped))} if dropped else {}),
                 "drop": drop if d == "approve" else [], "trim": trim if d == "approve" else {}}

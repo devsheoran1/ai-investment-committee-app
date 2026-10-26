@@ -43,10 +43,19 @@ written reason and is logged. hedge_proposal is only read when "soft_hedge" is o
             return {k: 0.0 for k in vals}
         return {k: (0.0 if x is None else float(np.clip((x - v.mean()) / v.std() / 2, -1, 1))) for k, x in vals.items()}
 
+    ETF_CAP = 0.95                                                       # an ETF score never sits at +-1.0 by construction
+
+    @staticmethod
+    def _stats(vals: dict):
+        v = np.array([x for x in vals.values() if x is not None], float)
+        return (float(v.mean()), float(v.std())) if len(v) >= 2 and v.std() > 0 else None
+
     def breakdown(self, ctx) -> dict[str, dict]:
         """Sub-score per signal, -1..+1, plus the model blend and the flags. 3m vol risk-adjusts the total."""
         T = ctx["technicals"]
         mom = self._z({t: T[t].get("mom_12_1_pct") for t in ctx["tickers"]})
+        U = ctx.get("underlying_tech") or {}
+        mom_st = self._stats({t: T[t].get("mom_12_1_pct") for t in ctx["tickers"]})
         race = ctx.get("race") or {}
         w = race.get("weights") or {}
         live = race.get("live") or {}
@@ -60,17 +69,27 @@ written reason and is logged. hedge_proposal is only read when "soft_hedge" is o
         out = {}
         for t in ctx["tickers"]:
             x = T[t]
+            etf = t in U
+            sgn = -1.0 if config.LEVERAGE_FACTOR.get(t, 1.0) < 0 else 1.0        # inverse ETF: the index signal, flipped
+            if etf:                                                              # leveraged ETF -> its underlying index's signals
+                x = U[t]
+                m_u = x.get("mom_12_1_pct")
+                mom[t] = 0.0 if (m_u is None or not mom_st) else float(np.tanh((m_u - mom_st[0]) / mom_st[1] / 2))
             above50, above200 = (x.get("px_vs_50dma_pct") or 0) > 0, (x.get("px_vs_200dma_pct") or 0) > 0
             rsi = x.get("rsi_14") or 50
             b = {"momentum_12_1": round(mom[t], 2),
                  "trend": round((0.5 if above50 else -0.5) + (0.5 if above200 else -0.5), 2),
                  "macd": 0.5 if (x.get("macd_hist_pct") or 0) > 0 else -0.5,
                  "rsi": -1.0 if rsi > 75 else (0.3 if 50 <= rsi <= 70 else 0.0)}
+            if etf and sgn < 0:
+                b = {k: round(-v, 2) for k, v in b.items()}
             tech = sum(self.SUB_WEIGHTS[k] * v for k, v in b.items())
             wm = sum(w.get(m, 0) for m in model_z)
             models = sum(w[m] * model_z[m][t] for m in model_z) / wm if wm else 0.0
             raw = (1 - wm) * tech + wm * models
             e = (e_scores.get(t) or {}).get("score")
+            if etf and e is not None:
+                e = float(np.tanh(e))                                          # the ETF's own z-scores saturate at +-1: squash
             volpen = 1 + max(0.0, ((x.get("vol_3m_ann_pct") or 30) / 100) - 0.40) / 0.40
             legacy = float(np.clip(raw / volpen, -1, 1))                  # pre-blend score, kept for the live tracker
             if e is not None:                                              # A2/A3: multi-strategy ensemble (strategies/)
@@ -81,8 +100,11 @@ written reason and is logged. hedge_proposal is only read when "soft_hedge" is o
             score = raw / (1 + max(0.0, vol - 0.40) / 0.40)                # vol risk-adjusts, never a buy signal
             flags = [f for f, ok in (("overbought", rsi > 75), ("oversold_watch", rsi < 25),
                                      ("below_200dma", not above200)) if ok]
-            out[t] = {"breakdown": {**b, "models": round(models, 2)}, "rule_score": round(float(np.clip(score, -1, 1)), 2),
+            lim = self.ETF_CAP if etf else 1.0
+            out[t] = {"breakdown": {**b, "models": round(models, 2)}, "rule_score": round(float(np.clip(score, -lim, lim)), 2),
                       "flags": flags}
+            if etf:
+                out[t]["breakdown"]["scored_on"] = x["underlying"]
             out[t]["breakdown"]["legacy"] = round(legacy, 3)             # additive (live tracker): legacy-only score
             if e is not None:
                 out[t]["breakdown"]["ensemble"] = round(e, 3)
@@ -187,6 +209,8 @@ written reason and is logged. hedge_proposal is only read when "soft_hedge" is o
             if tilt and tilt.get("applied") and t in tilt["_delta"]:      # bounded family tilt: shift by the change in the ensemble score
                 score = round(float(np.clip(score + tilt["_delta"][t], -1, 1)), 2)
             x = ctx["technicals"][t]
+            if t in (ctx.get("underlying_tech") or {}):
+                score = round(float(np.clip(score, -self.ETF_CAP, self.ETF_CAP)), 2)
             rsi, above200 = x.get("rsi_14") or 50, (x.get("px_vs_200dma_pct") or 0) > 0
             if rsi > 75 and score > 0:                                   # C3.3: RSI > 75 cuts the score
                 score = round(score * 0.5, 2)

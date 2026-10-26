@@ -182,6 +182,43 @@ def runs_today() -> int:
                              (today(),)).fetchone()[0])
 
 
+LOCK_STALE_MIN = 45        # a run that crashed without releasing the lock stops blocking after this
+
+
+def _lock_init(c) -> None:
+    c.execute("CREATE TABLE IF NOT EXISTS run_lock (id INTEGER PRIMARY KEY CHECK (id=1), holder TEXT, since TEXT)")
+
+
+def acquire_run_lock(holder: str = "committee") -> bool:
+    """Atomic: True if this caller now owns the single run lock, False if another run is in progress. A refusal creates no
+    runs row, so it never uses one of the 3 daily slots (Oct 26: runs 6 and 7 started 33 s apart -> 413/429 -> D12 freeze)."""
+    with conn() as c:
+        _lock_init(c)
+        c.execute("DELETE FROM run_lock WHERE since < ?", ((now() - dt.timedelta(minutes=LOCK_STALE_MIN)).isoformat(),))
+        return c.execute("INSERT OR IGNORE INTO run_lock (id, holder, since) VALUES (1,?,?)", (holder, _now())).rowcount == 1
+
+
+def release_run_lock(path: str | None = None) -> None:
+    """`path`: the DB the lock was taken in (a run may switch to the synthetic sandbox DB half-way)."""
+    cur = _DB["path"]
+    _DB["path"] = path or cur
+    try:
+        with conn() as c:
+            _lock_init(c)
+            c.execute("DELETE FROM run_lock WHERE id=1")
+    finally:
+        _DB["path"] = cur
+
+
+def run_in_progress() -> str | None:
+    """Holder + start of the live lock, or None (the UI disables the Run button on this)."""
+    with conn() as c:
+        _lock_init(c)
+        r = c.execute("SELECT holder, since FROM run_lock WHERE id=1 AND since >= ?",
+                      ((now() - dt.timedelta(minutes=LOCK_STALE_MIN)).isoformat(),)).fetchone()
+    return f"{r['holder']} since {r['since'][11:19]}" if r else None
+
+
 def mark_stale_runs() -> None:
     """Runs that crashed without finishing (e.g. Oct 11 run #1) are marked as errors."""
     with conn() as c:
@@ -198,6 +235,20 @@ def log_message(run_id: int, agent: str, title: str, model: str, stage: str,
                   "user_prompt, raw_output, tokens, latency_s) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                   (run_id, _now(), agent, title, model, stage, rnd, json.dumps(content, default=str),
                    p.get("system"), p.get("user"), p.get("raw"), p.get("tokens"), p.get("latency_s")))
+
+
+def run_tokens(run_id: int) -> int:
+    with conn() as c:
+        return int(c.execute("SELECT COALESCE(SUM(tokens),0) FROM messages WHERE run_id=?", (run_id,)).fetchone()[0])
+
+
+def previous_run_tokens(run_id: int) -> tuple[int, int] | None:
+    """(run id, tokens) of the latest earlier run today that made LLM calls, for the before/after token log."""
+    with conn() as c:
+        r = c.execute("SELECT r.id, COALESCE(SUM(m.tokens),0) AS t FROM runs r JOIN messages m ON m.run_id=r.id "
+                      "WHERE r.id<? AND substr(r.started_at,1,10)=? GROUP BY r.id HAVING t>0 ORDER BY r.id DESC LIMIT 1",
+                      (run_id, today())).fetchone()
+    return (r["id"], r["t"]) if r else None
 
 
 def get_runs() -> pd.DataFrame:
@@ -402,9 +453,14 @@ def export_trades_csv(path: str | None = None) -> str:
 
 
 # ---------------------------------------------------------- reflections --- #
+_SINCE_INCEPTION = "(decided_at IS NULL OR (SELECT inception_date FROM simulation WHERE id=1) IS NULL OR " \
+                   "substr(decided_at,1,10) >= (SELECT inception_date FROM simulation WHERE id=1))"
+
+
 def pending_reflections() -> list[dict]:
+    """Oct 27: scoped to the current fund's inception date, so rows from an archived dry run / pre-reset fund never feed memory."""
     with conn() as c:
-        return [dict(r) for r in c.execute("SELECT * FROM reflections WHERE eval_date IS NULL ORDER BY id")]
+        return [dict(r) for r in c.execute(f"SELECT * FROM reflections WHERE eval_date IS NULL AND {_SINCE_INCEPTION} ORDER BY id")]
 
 
 def finish_reflection(rid: int, eval_date: str, ret: float, spy_ret: float, excess: float,
@@ -416,7 +472,7 @@ def finish_reflection(rid: int, eval_date: str, ret: float, spy_ret: float, exce
 
 def get_reflections(evaluated_only: bool = False) -> pd.DataFrame:
     with conn() as c:
-        q = "SELECT * FROM reflections" + (" WHERE eval_date IS NOT NULL" if evaluated_only else "") + " ORDER BY id DESC"
+        q = f"SELECT * FROM reflections WHERE {_SINCE_INCEPTION}" + (" AND eval_date IS NOT NULL" if evaluated_only else "") + " ORDER BY id DESC"
         return pd.read_sql(q, c)
 
 

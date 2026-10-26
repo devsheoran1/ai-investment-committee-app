@@ -156,6 +156,8 @@ DRIFT_TOLERANCE = 0.05                  # IPS A16: resizes smaller than this are
 # Trading rules (Brief §1 + §10)
 MAX_TRADES_PER_DAY = 5                  # Brief §1: "5 trades (5 stocks)"
 INIT_DAY_EXEMPT_FROM_CAP = True         # IPS D1: initialisation needs 10-20 buys (confirm with Prof. Manero)
+DAY_CACHE = True                        # Oct 27: reuse same-day agent outputs (daycache.py); runs 2-3 pay only for what changed
+MACRO_REUSE_VIX_MOVE = 0.10             # re-run Macro only if VIX moved > 10% vs the cached run
 MAX_RUNS_PER_DAY = 3                    # Brief §10.2
 MIN_HOLDINGS, MAX_HOLDINGS = 10, 20     # Brief §1: "10 or 20"; 10 is a hard floor every day (IPS A7)
 TARGET_HOLDINGS = (12, 15)              # IPS A7 (Oct 20): buffer so one exit never breaches the floor

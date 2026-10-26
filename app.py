@@ -30,7 +30,7 @@ import valuation
 VIEWER = os.getenv("VIEWER_MODE") == "1"
 if not VIEWER:
     try:
-        from orchestrator import RunLimitError, execute_run, intraday_recheck, run_committee, snapshot_only
+        from orchestrator import MarketClosedError, RunBusyError, RunLimitError, execute_run, intraday_recheck, run_committee, snapshot_only
     except ImportError:
         VIEWER = True
 try:
@@ -297,8 +297,10 @@ def summarize(m: dict) -> tuple[str, list[str], str]:
     if a == "Macro Strategist":
         st_ = {"risk_on": "bullish", "risk_off": "bearish"}.get(c.get("regime"), "neutral")
         ow = [s for s, v in (c.get("sector_tilts") or {}).items() if v == "overweight"]
+        sig = " · ".join(f"{'🔴' if x['tripped'] else '⚪'} {x['signal']}: {x['value']}" for x in (c.get("c13_signals") or []))
         return st_, [f"regime {c.get('regime')} ({c.get('regime_note', '')})", f"leveraged room {c.get('max_leveraged', 0):.0%}",
-                     f"overweight {', '.join(ow)}"], c.get("rationale", "")
+                     f"overweight {', '.join(ow)}"] + ([sig] if sig else []) + ([c["inverse_gate"]] if c.get("inverse_gate") else []), \
+            c.get("rationale", "")
     if a == "Equity Research Analyst":
         r = c.get("ratings") or {}
         top = (r.get(c.get("top_pick") or "", {}) or {}).get("thesis", "")
@@ -372,7 +374,7 @@ def stage_status(msgs: list[dict], agent: str) -> str:
     return "ok"
 
 
-def run_status_row(msgs: list[dict], status: str) -> str:
+def run_status_row(msgs: list[dict], status: str, run_summary: str = "") -> str:
     color = {"ok": ui.GREEN, "fallback": ui.AMBER, "failed": ui.RED}
     cells = []
     for a in STATUS_AGENTS:
@@ -384,6 +386,10 @@ def run_status_row(msgs: list[dict], status: str) -> str:
     ex = "yes" if status == "executed" else "no"
     summary = (f"<b>Decision</b> {ui.esc(cio or '—')} · <b>Risk verdict</b> {ui.esc(risk or '—')} · "
                f"<b>Executed</b> {ex} <span style='color:{ui.MUTED}'>({ui.esc(status)})</span>")
+    if "NO TRADES:" in (run_summary or ""):
+        summary += f"<br><b>Why no trades</b> {ui.esc(run_summary.split('NO TRADES:', 1)[1].strip())}"
+    elif status == "proposed":
+        summary += f"<br><span style='color:{ui.MUTED}'>Proposal waiting: press Execute trades to place it.</span>"
     return f"<div class='card'><div style='margin-bottom:6px'>{summary}</div><div>{' '.join(cells)}</div></div>"
 
 
@@ -394,8 +400,15 @@ with tab_room:
         st.error("⛔ HALT file present in the repo root: you can run the analysis, execution is disabled.")
     left, right = st.columns([1, 3])
     with left:
-        run_clicked = (not REPLAY and not VIEWER) and st.button("▶️ Run committee", type="primary", width="stretch")
+        busy = None if (REPLAY or VIEWER) else db.run_in_progress()
+        closed = (not REPLAY and not VIEWER and provider != "mock" and not nyse_calendar.is_trading_day(db.today()))
+        run_clicked = (not REPLAY and not VIEWER) and st.button("▶️ Run committee", type="primary", width="stretch",
+                                                                 disabled=bool(busy) or closed)
         st.caption("Init day: 10-20 buys, cap exempt. Daily: max 5 trades. Max 3 runs/day.")
+        if busy:
+            st.warning(f"A run is in progress ({busy}). The button is disabled until it finishes; refresh to update.")
+        elif closed:
+            st.info("NYSE is closed today: the committee does not run. Analysis-only tools stay available in the sidebar.")
     timeline_box = right.empty()
     timeline_box.markdown(ui.timeline(STEPS, 0), unsafe_allow_html=True)
     if run_clicked:
@@ -409,12 +422,16 @@ with tab_room:
         try:
             res = run_committee(provider, progress=progress)
             st.session_state["selected_run"] = res["run_id"]
+        except (RunBusyError, MarketClosedError) as e:      # refused before a run row exists: no slot used, no rerun
+            st.error(str(e))
+            run_clicked = None
         except RunLimitError as e:
             st.error(str(e))
         except Exception as e:  # noqa: BLE001
             st.exception(e)
-        load_market.clear()
-        st.rerun()
+        if run_clicked is not None:
+            load_market.clear()
+            st.rerun()
 
     if runs.empty:
         ui.empty("No committee meeting yet", "Press Run committee: the Morning Brief, four analysts, the PM, the Devil's "
@@ -433,7 +450,7 @@ with tab_room:
         prop = db.get_proposal(run_id)
         run_status = r.loc[run_id, "status"]
         book_state = "EXECUTED" if run_status == "executed" else "PROPOSED"
-        st.markdown(run_status_row(msgs, run_status), unsafe_allow_html=True)
+        st.markdown(run_status_row(msgs, run_status, r.loc[run_id, "summary"] or ""), unsafe_allow_html=True)
         has_da_answer = any(x["agent"] == "Portfolio Manager" and x["stage"] == "proposal_answers_da" for x in msgs)
         show_diag = st.toggle("Show diagnostics (agent-by-agent minutes, prompts, raw output)", value=False)
         for m in (msgs if show_diag else []):

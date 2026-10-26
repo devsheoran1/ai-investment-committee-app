@@ -7,7 +7,9 @@ Sentiment / News Analyst (IPS C4.1-C4.6, owner Mer).
     no news  -> score null, shown "n/a" (never 0.0); its 30% weight is redistributed pro rata (C5.2)
     guard    > 70% of names WITH headlines scored exactly 0.0 -> one retry on gpt-oss-120b (C4.6)
 """
-from .base import Agent, as_map, compact, clip, entry
+import daycache
+
+from .base import Agent, as_map, compact, clip, entry, split_by_size
 
 POS = ("beat", "surge", "record", "upgrade", "raises", "growth", "strong", "rally", "wins", "soar", "buy")
 NEG = ("miss", "falls", "cut", "downgrade", "lawsuit", "probe", "weak", "plunge", "recall", "slump", "fine")
@@ -67,17 +69,37 @@ If a ticker's headlines are all noise, score it 0 and say "noise only". Tickers 
         return {"sentiment": out, "market_mood": "[mock] FinBERT average per name"}
 
     def run(self, ctx, llm):
+        """Oct 27: only headlines not scored earlier today go to the LLM (cache by hash of the ticker's headlines)."""
+        if not daycache.active(ctx):
+            return self._run_batched(ctx, llm)
+        rows = self._rows(ctx)
+        earn = ctx.get("earnings") or {}
+        keys = {t: daycache.h(t, [(x["src"], x["h"]) for x in rows[t]], earn.get(t)) for t in rows}
+        hits = {t: g for t in rows if (g := daycache.get("sentiment", keys[t]))}
+        miss = [t for t in ctx["tickers"] if t not in hits]
+        fresh, model = ({"sentiment": {}, "market_mood": ""}, "")
+        if any(t in rows for t in miss):
+            fresh, model = self._run_batched({**ctx, "tickers": miss}, llm)
+        else:                                          # nothing new to read: no-news names are n/a, no LLM call
+            fresh = self.validate({}, {**ctx, "tickers": miss})
+        for t in miss:
+            if t in rows and (fresh["sentiment"].get(t) or {}).get("score") is not None:      # never cache a "no answer"
+                daycache.put("sentiment", keys[t], ctx.get("run_id"), {"entry": fresh["sentiment"][t], "mood": fresh.get("market_mood", "")})
+        sent = {t: (hits[t][0]["entry"] if t in hits else fresh["sentiment"][t]) for t in ctx["tickers"]}
+        mood = fresh.get("market_mood") or next((hits[t][0]["mood"] for t in hits if hits[t][0].get("mood")), "")
+        out = {**fresh, "sentiment": sent, "market_mood": mood}
+        if hits:
+            runs = sorted({hits[t][1] for t in hits if hits[t][1]})
+            out["reused"] = {"names": len(hits), "of": len(rows), "from_runs": runs}
+            model = (model + " + " if model else "") + f"reused {len(hits)}/{len(rows)} names from run {', '.join(map(str, runs))}"
+        return out, model or "no new headlines"
+
+    def _run_batched(self, ctx, llm):
         """Batches the names so no single request exceeds Groq's request-size limit (Oct 20: 413 on 43 names)."""
         def size(ticks):            # the WHOLE request: system prompt + brief + headlines + earnings context
             c = {**ctx, "tickers": ticks}
             return len(self.system_prompt) + len(self.build_prompt(c)) + min(900, len(ctx.get("morning_brief") or ""))
-        chunks, todo = [], [list(ctx["tickers"])]
-        while todo:
-            ch = todo.pop(0)
-            if len(ch) > 1 and size(ch) > MAX_REQUEST_CHARS:
-                todo[:0] = [ch[:len(ch) // 2], ch[len(ch) // 2:]]
-            else:
-                chunks.append(ch)
+        chunks = split_by_size(ctx["tickers"], size, MAX_REQUEST_CHARS)
         if len(chunks) <= 1:
             return self._run_one(ctx, llm)
         merged, moods, models = {}, [], []

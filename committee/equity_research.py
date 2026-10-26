@@ -1,8 +1,11 @@
 import numpy as np
 
-from .base import Agent, as_map, compact, clip, entry
+import daycache
+
+from .base import Agent, as_map, compact, clip, entry, split_by_size
 
 RATINGS = ("buy", "hold", "sell", "insufficient_data")
+MAX_REQUEST_CHARS = 14000     # whole request (system + brief + fundamentals); same budget as Sentiment (Groq 413 on 46 names, Oct 26)
 
 
 class EquityResearchAnalyst(Agent):
@@ -43,6 +46,52 @@ current estimate and the recommendation trend; add one line on whether the setup
                 f"mkt_cap/fcf in $bn, debt_to_equity in %.\n{compact(f)}\n\nFLAGS:\n{compact(flags)}\n\n"
                 + (f"EARNINGS PREVIEW INPUTS (reporting within 5 trading days):\n{compact(earn)}\n\n" if earn else "")
                 + f"Rate every ticker: {list(f)}")
+
+    def run(self, ctx, llm):
+        """Oct 27: (1) one request never exceeds MAX_REQUEST_CHARS: names are halved until each batch fits;
+        (2) a name's rating is reused for the rest of the day while its fundamentals row is unchanged."""
+        fund = ctx["fundamentals"]
+        live = [t for t, d in fund.items() if not d.get("insufficient_data")]
+        keys = {t: daycache.h(t, fund[t], ctx["research_flags"].get(t)) for t in live}
+        hits = {t: g for t in live if daycache.active(ctx) and (g := daycache.get("research", keys[t]))}
+        todo = [t for t in live if t not in hits]
+        dead = {t: d for t, d in fund.items() if d.get("insufficient_data")}
+
+        def sub(ch):
+            return {**ctx, "fundamentals": {**{t: fund[t] for t in ch}, **dead}}
+
+        def size(ch):
+            return len(self.system_prompt) + len(self.build_prompt(sub(ch))) + min(900, len(ctx.get("morning_brief") or ""))
+        chunks = split_by_size(todo, size, MAX_REQUEST_CHARS) if todo else []
+        ratings, models, picks = {}, [], []
+        for ch in chunks:
+            o, m = super().run(sub(ch), llm)
+            ratings.update(o["ratings"]); models.append(m); picks.append(o)
+            if daycache.active(ctx):
+                for t in ch:
+                    if t in o["ratings"]:
+                        daycache.put("research", keys[t], ctx.get("run_id"), o["ratings"][t])
+        for t, (r, _) in hits.items():
+            ratings[t] = r
+        for t in dead:
+            ratings.setdefault(t, self.validate({}, sub([]))["ratings"][t])
+        ratings = {t: ratings[t] for t in fund if t in ratings}
+        scored = {t: r["score"] for t, r in ratings.items() if r["rating"] != "insufficient_data"}
+        if len(picks) == 1 and not hits:
+            top, least = picks[0]["top_pick"], picks[0]["least_preferred"]
+        else:                                              # merged batches / cache: best and worst by score
+            top = max(scored, key=scored.get) if scored else None
+            least = min(scored, key=scored.get) if scored else None
+        out = {"ratings": ratings, "top_pick": top, "least_preferred": least}
+        label = " + ".join(dict.fromkeys(models))
+        if len(chunks) > 1:
+            out["batches"] = len(chunks)
+            label += f" ({len(chunks)} batches)"
+        if hits:
+            runs = sorted({r for _, r in hits.values() if r})
+            out["reused"] = {"names": len(hits), "of": len(live), "from_runs": runs}
+            label = (label + " + " if label else "") + f"reused {len(hits)}/{len(live)} names from run {', '.join(map(str, runs))}"
+        return out, label or "no names to rate"
 
     def mock(self, ctx):
         f = {t: d for t, d in ctx["fundamentals"].items() if not d.get("insufficient_data")}

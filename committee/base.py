@@ -97,3 +97,34 @@ class Agent:
                                    agent_name=self.name, mock_fn=lambda: self.mock(ctx))
         self.last_call = dict(getattr(llm, "last", {}) or {})          # Stage 8: what this agent saw
         return self.validate(raw if isinstance(raw, dict) else {}, ctx), model
+
+
+def split_by_size(tickers, size_fn, limit: int) -> list[list]:
+    """Halve a ticker list until every chunk's WHOLE request (size_fn(chunk) chars) fits `limit` (Groq 413/8K-per-min)."""
+    chunks, todo = [], [list(tickers)]
+    while todo:
+        ch = todo.pop(0)
+        if len(ch) > 1 and size_fn(ch) > limit:
+            todo[:0] = [ch[:len(ch) // 2], ch[len(ch) // 2:]]
+        else:
+            chunks.append(ch)
+    return chunks
+
+
+_NOT_TICKERS = {"ON", "IT", "ALL", "ARE", "NOW", "BIG", "CEO", "USD", "ETF", "NAV", "VIX", "IPS", "RSI", "PM", "CIO", "AI",
+                "EPS", "GDP", "FED", "CPI", "FOMC", "MACD", "LSTM", "SEC", "NYSE", "US", "UK", "EU", "DD", "OK", "KEY", "CAT"}
+
+
+def scrub_refs(text: str, allowed: set, universe: set) -> tuple[str, list[str]]:
+    """Oct 27 (CIO cited IEX/PSX/KO that were not part of the book): drop every sentence that names a known ticker which is
+    neither held, proposed nor otherwise in `allowed`. Returns (clean text, dropped tickers) so the caller can log them."""
+    import re
+    bad, keep = [], []
+    for sent in re.split(r"(?<=[.;!?])\s+", str(text or "")):
+        toks = {t for t in re.findall(r"\b[A-Z]{1,5}(?:-[A-Z])?\b", sent) if t in universe and t not in _NOT_TICKERS and len(t) >= 2}
+        off = toks - set(allowed)
+        if off:
+            bad += sorted(off)
+        else:
+            keep.append(sent)
+    return " ".join(keep).strip(), sorted(set(bad))

@@ -59,6 +59,17 @@ def technicals(prices: pd.DataFrame, tickers: list[str]) -> dict[str, dict]:
     return out
 
 
+def underlying_technicals(prices: pd.DataFrame, tickers, asset_types: dict[str, str]) -> dict[str, dict]:
+    """ETF ticker -> technicals of its underlying index (config.ETF_UNDERLYING). Leveraged series are 2-3x vol, so
+    z-scores and trend flags on the ETF itself saturate; Quant scores the index instead."""
+    out = {}
+    for t in tickers:
+        u = config.ETF_UNDERLYING.get(t)
+        if asset_types.get(t) in ("leveraged_etf", "inverse_etf") and u in prices.columns and prices[u].dropna().shape[0] > 252:
+            out[t] = {**technicals(prices, [u])[u], "underlying": u}
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Macro regime (IPS C1.3 / C1.5) — rules in code, the Macro LLM explains them
 # --------------------------------------------------------------------------- #
@@ -84,7 +95,12 @@ def macro_regime(macro: dict) -> dict:
         raw = "neutral"
     # Oct 21: a single risk-off signal already blocks new leveraged buys; 2 of 4 = full risk-off
     lev_block = [k for k, v in off.items() if v]
-    return {"raw_regime": raw, "risk_off_signals": off, "risk_on_signals": on, "lev_buy_block": lev_block}
+    values = {"VIX > 25": f"VIX {macro['vix_level']:.1f}",
+              "SPY below 50dma and 200dma": f"SPY {macro['spy_vs_50dma_pct']:+.1f}% vs 50dma, {macro['spy_vs_200dma_pct']:+.1f}% vs 200dma",
+              "HYG/LQD > 1% below 20dma": "HYG/LQD n/a" if hl is None else f"HYG/LQD {hl:+.2f}% vs 20dma",
+              "VIX up > 30% in one day": f"VIX {macro['vix_1d_change_pct']:+.1f}% on the day"}
+    return {"raw_regime": raw, "risk_off_signals": off, "risk_on_signals": on, "lev_buy_block": lev_block,
+            "risk_off_values": values, "n_risk_off": len(lev_block)}
 
 
 def apply_hysteresis(raw: str, prev_effective: str | None, prev_raw: str | None) -> tuple[str, str]:
