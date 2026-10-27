@@ -173,9 +173,13 @@ PRICE_JUMP_EXCLUDE = 0.20               # IPS D10: per-ticker pre-flight check
 # Any ONE risk-off signal blocks new leveraged buys (Oct 21); 2 of 4 = full risk-off (analytics.macro_regime).
 REGIME_RULES = {
     "risk_on":  {"equity_exposure": 0.98, "max_leveraged": 0.30, "inverse": (0.0, 0.0),  "beta": (1.2, 1.6)},
-    "neutral":  {"equity_exposure": 0.98, "max_leveraged": 0.10, "inverse": (0.0, 0.0),  "beta": (0.9, 1.2)},
+    "neutral":  {"equity_exposure": 0.98, "max_leveraged": 0.10, "inverse": (0.0, 0.0),  "beta": (0.5, 1.2)},
     "risk_off": {"equity_exposure": 0.98, "max_leveraged": 0.0,  "inverse": (0.10, 0.15), "beta": (0.3, 0.7)},
 }
+# Oct 27: the neutral band is a SOFT penalty in the optimiser (lower bound 0.5, was a hard 0.9-1.2 that zeroed negative-beta names such as
+# ERX and pushed the book to high-beta tech); risk-on / risk-off bands stay hard constraints. Risk Manager still only warns.
+BETA_BAND_SOFT = {"risk_on": False, "neutral": True, "risk_off": False}
+BETA_SOFT_PENALTY = 5.0                 # utility -= k * (shortfall^2 + excess^2) of portfolio beta outside the band
 RISK_OFF_HIGH_VIX = 30                  # IPS C1.4: inverse hedge up to 25% if VIX > 30
 
 MAX_RISK_ROUNDS = 3                     # IPS C6.5 (Oct 20)

@@ -166,7 +166,7 @@ def cap_book(w: dict, sector: dict, total: float, name_cap=0.20, sec_cap=0.35) -
 def simulate(P: Prep, score: pd.DataFrame, votes: pd.DataFrame | None, *, freq: str = "W", n_names: int = 15,
              pair_trims: bool = True, trailing: bool = True, stop: bool = True, vote_gate: bool = True,
              vol_managed: bool = True, cost_bps: float = 0.0, start: str = "2023-10-23", end: str | None = None,
-             cooldown_days: int = 5, trail_pct: float | None = None) -> dict:
+             cooldown_days: int = 5, trail_pct: float | None = None, target_fn=None) -> dict:
     idx = P.close.index
     i0 = int(idx.searchsorted(pd.Timestamp(start)))
     i1 = len(idx) - 1 if end is None else int(idx.searchsorted(pd.Timestamp(end), side="right")) - 1
@@ -260,7 +260,7 @@ def simulate(P: Prep, score: pd.DataFrame, votes: pd.DataFrame | None, *, freq: 
             for t in names:
                 if not pd.isna(vv[t]) and vv[t] > 0:
                     raw[t] *= float(np.clip(med / vv[t], config.VOL_MANAGED["floor"], config.VOL_MANAGED["cap"]))
-        target = cap_book(raw, sector, 0.97)
+        target = target_fn(i, names, cand, first) if target_fn else cap_book(raw, sector, 0.97)   # target_fn: e.g. the live optimiser
         pxd = {t: float(crow[t]) for t in set(target) | set(pos) if not pd.isna(crow[t])}
         comp = {t: {"composite": float(srow[t]) if not pd.isna(srow[t]) else 0.0} for t in pxd}
         pos_in = {t: dict(p) for t, p in pos.items()}

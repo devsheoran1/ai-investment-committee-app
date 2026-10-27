@@ -179,7 +179,7 @@ def test_failed_recheck_after_cio_edit_restores_the_risk_approved_orders():
 
 def test_orchestrator_wires_the_fallback_and_logs_it():
     src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "orchestrator.py")).read()
-    assert "orders_after_failed_recheck(pre_edit, orders, cio_edited)" in src and '"cio_reverted"' in src
+    assert "recover_cio_edits(" in src and '"cio_reverted"' in src and '"cio_recovered"' in src
 
 
 # ---- 4. end to end: the second run of the day reuses agent outputs, and logs tokens ----------------- #

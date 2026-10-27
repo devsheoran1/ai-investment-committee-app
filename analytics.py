@@ -327,7 +327,8 @@ def optimise(convictions: dict[str, float], prices: pd.DataFrame, sectors: dict[
              max_names: int, risk_aversion: float = 4.0, diversification: float = 0.5,
              lev_cap_override: float | None = None, min_weight: float = 0.01,
              ensure_min: bool = False, caps: dict[str, float] | None = None,
-             inverse_min: float | None = None, lookback: int = 252, soft_inverse: float = 0.0) -> dict[str, float]:
+             inverse_min: float | None = None, lookback: int = 252, soft_inverse: float = 0.0,
+             beta_band: tuple | None = None, beta_soft: bool | None = None) -> dict[str, float]:
     """Mean-variance on the PM's convictions, maximise
         w'mu - (risk_aversion/2) w'Sigma w - diversification * ||w - w_eq||^2
     with every IPS limit as a constraint. Only the top `max_names` convictions
@@ -379,7 +380,8 @@ def optimise(convictions: dict[str, float], prices: pd.DataFrame, sectors: dict[
         keep = list(dict.fromkeys(tickers + [t for t in pool[:extra] if t in prices.columns]))
         for _ in range(4):
             w, ub, ok = _solve(keep, convictions, prices, sectors, kind, equity_exposure, lev_cap, inv_lo, inv_hi,
-                               risk_aversion, diversification, lookback, beta_band=R["beta"], caps=caps,
+                               risk_aversion, diversification, lookback, beta_band=beta_band if beta_band is not None else R["beta"], caps=caps,
+                               beta_soft=config.BETA_BAND_SOFT.get(regime, False) if beta_soft is None else beta_soft,
                                lb=min_weight * 1.02 if ensure_min else 0.0)
             small = [t for t, x in zip(keep, w) if x < min_weight]
             if not small or len(keep) - len(small) < min_names:
@@ -393,7 +395,7 @@ def optimise(convictions: dict[str, float], prices: pd.DataFrame, sectors: dict[
 
 
 def _solve(tickers, convictions, prices, sectors, kind, equity_exposure, lev_cap, inv_lo, inv_hi,
-           risk_aversion, diversification, lookback, beta_band=None, lb=0.0, caps=None):
+           risk_aversion, diversification, lookback, beta_band=None, lb=0.0, caps=None, beta_soft=False):
     L = config.RISK_LIMITS
     buf = 0.995   # small buffer under each cap so whole-share rounding never breaches it
     rets = np.log(prices[tickers]).diff().dropna().tail(lookback)
@@ -427,11 +429,22 @@ def _solve(tickers, convictions, prices, sectors, kind, equity_exposure, lev_cap
     w0 *= equity_exposure / w0.sum()
     w_eq = w0.copy()
 
+    betas, soft_lo, soft_hi = None, 0.0, 0.0
+    if beta_band is not None and beta_soft and config.BENCHMARK in prices.columns:
+        r = np.log(prices[tickers + [config.BENCHMARK]]).diff().dropna().tail(lookback)
+        m = r[config.BENCHMARK].values
+        betas = np.array([np.cov(r[t].values, m)[0, 1] / m.var() for t in tickers])
+        soft_lo, soft_hi = beta_band
+
     def neg_util(w):
-        return -(w @ mu - 0.5 * risk_aversion * w @ cov @ w - diversification * np.sum((w - w_eq) ** 2))
+        u = w @ mu - 0.5 * risk_aversion * w @ cov @ w - diversification * np.sum((w - w_eq) ** 2)
+        if betas is not None:                                  # soft band: quadratic penalty outside [lo, hi], no hard bound
+            b = float(w @ betas)
+            u -= config.BETA_SOFT_PENALTY * (max(0.0, soft_lo - b) ** 2 + max(0.0, b - soft_hi) ** 2)
+        return -u
 
     res = None
-    if beta_band is not None and config.BENCHMARK in prices.columns:
+    if beta_band is not None and not beta_soft and config.BENCHMARK in prices.columns:
         # IPS C1.4: regime beta band. Portfolio beta is linear in w, so it is a plain constraint.
         r = np.log(prices[tickers + [config.BENCHMARK]]).diff().dropna().tail(lookback)
         m = r[config.BENCHMARK].values
@@ -759,6 +772,55 @@ def _post_values(positions: dict, orders: list[dict], px: dict) -> dict[str, flo
     for o in orders:
         sh[o["ticker"]] = sh.get(o["ticker"], 0) + (o["shares"] if o["side"] == "BUY" else -o["shares"])
     return {t: s * px[t] for t, s in sh.items() if s > 0 and t in px}
+
+
+def upsize_buys_for_cash(orders: list[dict], positions: dict, px: dict, nav: float, cash: float, sectors: dict,
+                         asset_types: dict, caps: dict | None = None, lev_cap: float | None = None,
+                         no_new_leveraged: bool = False) -> list[dict]:
+    """After a CIO drop/trim the book can end with cash above the A12 cap. Spread the excess (down to TARGET_CASH) over the
+    remaining BUYs pro rata to their size, inside the 20% name / 35% sector / ETF caps and the leveraged-sleeve room; whole shares,
+    no new trade slots. Returns the orders unchanged if cash is already <= the cap or nothing can take more."""
+    L, caps = config.RISK_LIMITS, caps or {}
+    sells = [dict(o) for o in orders if o["side"] == "SELL"]
+    buys = [dict(o) for o in orders if o["side"] == "BUY"]
+    avail = cash + sum(o["notional"] for o in sells) - sum(o["notional"] for o in buys)
+    if not buys or avail / nav <= L["max_cash_weight"]:
+        return [dict(o) for o in orders]
+    post_val = _post_values(positions, sells + buys, px)
+    excess = avail - config.TARGET_CASH * nav
+    lev_total = sum(v for t, v in post_val.items() if asset_types.get(t) == "leveraged_etf")
+    lev_room = 0.995 * (lev_cap if lev_cap is not None else L["max_leveraged_total"]) * nav - lev_total
+
+    def room(t):
+        k = asset_types.get(t, "stock")
+        name_cap = L["max_single_weight"] if k == "stock" else min(L["max_leveraged_each"], caps.get(t, 1.0)) \
+            if k == "leveraged_etf" else min(L["max_inverse_total"], caps.get(t, 1.0))
+        r = 0.995 * name_cap * nav - post_val.get(t, 0.0)
+        if k == "stock":
+            r = min(r, 0.995 * L["max_sector_weight"] * nav - sum(v for u, v in post_val.items() if sectors.get(u) == sectors.get(t)))
+        elif k == "leveraged_etf":
+            r = min(r, lev_room)
+        return max(0.0, r)
+
+    for _ in range(4):
+        elig = [o for o in buys if not (no_new_leveraged and asset_types.get(o["ticker"]) == "leveraged_etf")
+                and room(o["ticker"]) >= o["price"]]
+        base = sum(o["notional"] for o in elig)
+        if excess < 1 or not elig or base <= 0:
+            break
+        pool = excess
+        for o in elig:
+            add = int(math.floor(min(room(o["ticker"]), pool * o["notional"] / base, excess) / o["price"]))
+            if add <= 0:
+                continue
+            o["shares"] += add
+            o["notional"] = round(o["shares"] * o["price"], 2)
+            o["upsized"] = True
+            post_val[o["ticker"]] = post_val.get(o["ticker"], 0.0) + add * o["price"]
+            if asset_types.get(o["ticker"]) == "leveraged_etf":
+                lev_room -= add * o["price"]
+            excess -= add * o["price"]
+    return sells + buys
 
 
 def _post_count(positions: dict, orders: list[dict]) -> int:
