@@ -67,6 +67,12 @@ def _last_prices(close, tickers) -> dict[str, float]:
     return out
 
 
+def orders_after_failed_recheck(pre_edit: list[dict], edited: list[dict], cio_edited: bool) -> list[dict]:
+    """The order list after Risk's re-check of a changed book found a hard breach. If the change was a CIO drop/trim, go back
+    to the list Risk already approved (the CIO's concern stays in the minutes); any other change keeps forced exits only."""
+    return list(pre_edit) if cio_edited else [o for o in edited if o["forced"]]
+
+
 def _preflight(close, tickers) -> dict[str, str]:
     """IPS D10: per-ticker check. Returns {ticker: reason} for names that fail."""
     bad = {}
@@ -562,7 +568,10 @@ def _run_committee(provider: str | None = None, progress=None, execute: bool = F
             cio["committee_summary"] = (f"CIO unavailable, rules fallback: Risk {risk['decision']}; {len(orders)} order(s) kept "
                                         f"(Risk-passed, C5.3 entry rule, forced exits).")
             db.log_message(run_id, "CIO", "CIO — rules fallback (agent failed)", "rules", "decision", 0, cio)
+        pre_edit = list(orders)                   # the exact list Risk approved, before any CIO drop/trim
+        cio_edited = False
         if cio["decision"] == "approve" and (cio.get("drop") or cio.get("trim")):
+            cio_edited = True
             orders, cio["applied_changes"] = apply_cio_edits(orders, cio, init_mode)
             db.log_message(run_id, "CIO", "CIO — order edits (drop/trim, re-checked by Risk)", "rules", "cio_edits", 0,
                            {"decision": cio["decision"], "applied_changes": cio["applied_changes"],
@@ -591,7 +600,14 @@ def _run_committee(provider: str | None = None, progress=None, execute: bool = F
                                                             + ("All hard limits pass." if ok2 else "Hard breach: forced exits only.")})
             if not ok2:
                 recheck_breaches = list(rr2["breaches"])
-                orders = [o for o in orders if o["forced"]]
+                orders = orders_after_failed_recheck(pre_edit, orders, cio_edited)
+                if cio_edited:       # Oct 27 (run 5): a CIO trim must not cancel the whole Risk-approved book
+                    db.log_message(run_id, "Risk Manager", "Re-check failed: CIO edits reverted", "rules", "cio_reverted", 0,
+                                   {"reverted_changes": cio.get("applied_changes"), "hard_breaches": recheck_breaches,
+                                    "orders_kept": [f"{o['side']} {o['ticker']}" for o in orders],
+                                    "note": "CIO drop/trim broke a hard limit; fell back to the Risk-approved order list (forced exits kept)."})
+                    cio["reverted_edits"] = recheck_breaches
+                    cio["committee_summary"] += f" CIO edits reverted: they breached {'; '.join(recheck_breaches)} on Risk's re-check."
 
         # ---------------------------------------------------------- 7. Trader -- #
         post_final = _post_trade_weights(positions, cash, orders, last_px)

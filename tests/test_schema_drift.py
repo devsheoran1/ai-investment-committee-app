@@ -101,7 +101,10 @@ def test_cio_init_cannot_decline_minutes_match_and_trim_drop_go_back_to_risk():
     edits = next(m["content"] for m in msgs if m["stage"] == "cio_edits")
     assert any("dropped" in x for x in edits["applied_changes"]) and any("trimmed" in x for x in edits["applied_changes"])
     final = {o["ticker"] for o in res["orders"]}
-    assert box["buys"][-1] not in final or len(box["buys"]) <= 10
+    # the drop is honoured, or it broke a hard limit on Risk's re-check and the Risk-approved list was restored (Oct 27, logged)
+    reverted = any(m["stage"] == "cio_reverted" for m in msgs)
+    assert box["buys"][-1] not in final or len(box["buys"]) <= 10 or reverted
+    assert not reverted or box["buys"][-1] in final
     assert any(m["stage"] == "risk_recheck" for m in msgs), "CIO edits did not go back to Risk"
 
 

@@ -166,6 +166,22 @@ def test_cio_minutes_only_name_held_proposed_or_ordered_tickers():
 
 
 
+# ---- 8. failed CIO-edit re-check falls back to the Risk-approved list ------------------------------- #
+def test_failed_recheck_after_cio_edit_restores_the_risk_approved_orders():
+    o = lambda t, side, forced=False: {"ticker": t, "side": side, "forced": forced, "shares": 10}
+    approved = [o("STOP", "SELL", True), o("IEX", "BUY"), o("PSX", "BUY")]
+    edited = [o("STOP", "SELL", True), o("IEX", "BUY")]                    # CIO trimmed/dropped PSX
+    kept = orchestrator.orders_after_failed_recheck(approved, edited, cio_edited=True)
+    assert [x["ticker"] for x in kept] == ["STOP", "IEX", "PSX"]
+    # any other post-Risk change (not a CIO edit) still keeps forced exits only
+    assert [x["ticker"] for x in orchestrator.orders_after_failed_recheck(approved, edited, cio_edited=False)] == ["STOP"]
+
+
+def test_orchestrator_wires_the_fallback_and_logs_it():
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "orchestrator.py")).read()
+    assert "orders_after_failed_recheck(pre_edit, orders, cio_edited)" in src and '"cio_reverted"' in src
+
+
 # ---- 4. end to end: the second run of the day reuses agent outputs, and logs tokens ----------------- #
 @_with_tmp
 def test_second_mock_run_reuses_same_day_outputs_and_logs_tokens():
